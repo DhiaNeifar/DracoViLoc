@@ -3,6 +3,8 @@
 ROS 2 Humble workspace for a single FAIRINO arm with a wrist-mounted D435i
 camera and a simple kinematic drone in Gazebo Sim.
 
+Installation instructions: [docs/INSTALL_ROS2_GAZEBO.md](docs/INSTALL_ROS2_GAZEBO.md)
+
 ## Build and launch
 
 ```bash
