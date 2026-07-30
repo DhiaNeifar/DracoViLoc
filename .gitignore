@@ -1,0 +1,85 @@
+# ROS 2 and C++ Workspace .gitignore
+# Build, install, and log directories
+build/
+install/
+log/
+
+# ROS 2 colcon files
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.swp
+*.swo
+*.swn
+*.bak
+*.tmp
+*.log
+*.DS_Store
+*.egg-info/
+
+# CMake and Make
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+CTest*
+
+# Fairino SDK generated outputs
+fairino-cpp-sdk/libfairino/LinuxBuild/bin/
+fairino-cpp-sdk/libfairino/build*/
+fairino-cpp-sdk/libfairino/lib/
+fairino-cpp-sdk/libfairino/include/
+fairino-cpp-sdk/linux/libfairino/lib/
+fairino-cpp-sdk/windows/libfairino/lib/
+*.so.*
+
+# Python cache
+__pycache__/
+
+# VS Code
+.vscode/
+
+# Misc
+*.user
+*.~
+*.orig
+*.rej
+*.bin
+*.out
+*.obj
+*.exe
+*.dll
+*.class
+*.jar
+*.zip
+*.tar
+*.gz
+*.7z
+*.csv
+*.tsv
+*.db
+*.sqlite
+*.pdf
+*.doc*
+*.xls*
+*.ppt*
+*.mp3
+*.mp4
+*.avi
+*.mov
+*.wmv
+*.flv
+*.mkv
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.ico
+
+# Ignore hidden files except .gitignore
+.*
+!.gitignore
+src/vicoman_vision/realsense-ros/
