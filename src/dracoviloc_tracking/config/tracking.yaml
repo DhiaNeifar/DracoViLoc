@@ -1,0 +1,11 @@
+arm_drone_tracker:
+  ros__parameters:
+    tracking_enabled: true
+    tracking_rate: 5.0
+    angular_deadband: 0.06
+    drone_position_deadband: 0.01
+    max_angular_speed: 0.8
+    planning_group: arm
+    planning_frame: world
+    camera_frame: d435i_link
+    drone_frame: drone_base_link

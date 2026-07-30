@@ -1,0 +1,60 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="drone">
+  <xacro:macro name="box_inertial" params="mass x y z">
+    <inertial>
+      <mass value="${mass}"/>
+      <inertia ixx="${mass*(y*y+z*z)/12}" ixy="0" ixz="0"
+               iyy="${mass*(x*x+z*z)/12}" iyz="0"
+               izz="${mass*(x*x+y*y)/12}"/>
+    </inertial>
+  </xacro:macro>
+  <link name="drone_base_link">
+    <visual>
+      <geometry><box size="0.10 0.07 0.04"/></geometry>
+      <material name="body"><color rgba="0.08 0.12 0.18 1"/></material>
+    </visual>
+    <collision><geometry><box size="0.10 0.07 0.04"/></geometry></collision>
+    <xacro:box_inertial mass="0.25" x="0.10" y="0.07" z="0.04"/>
+  </link>
+  <gazebo reference="drone_base_link"><gravity>false</gravity></gazebo>
+
+  <xacro:macro name="arm" params="name x y yaw color">
+    <link name="${name}_arm_link">
+      <visual>
+        <geometry><box size="0.18 0.018 0.012"/></geometry>
+        <material name="${name}_color"><color rgba="${color}"/></material>
+      </visual>
+      <collision><geometry><box size="0.18 0.018 0.012"/></geometry></collision>
+      <xacro:box_inertial mass="0.02" x="0.18" y="0.018" z="0.012"/>
+    </link>
+    <joint name="${name}_arm_joint" type="fixed">
+      <parent link="drone_base_link"/><child link="${name}_arm_link"/>
+      <origin xyz="${x} ${y} 0" rpy="0 0 ${yaw}"/>
+    </joint>
+  </xacro:macro>
+  <xacro:arm name="front" x="0.08" y="0" yaw="0" color="0.9 0.1 0.1 1"/>
+  <xacro:arm name="rear" x="-0.08" y="0" yaw="0" color="0.1 0.1 0.1 1"/>
+  <xacro:arm name="left" x="0" y="0.08" yaw="1.57079632679" color="0.1 0.1 0.1 1"/>
+  <xacro:arm name="right" x="0" y="-0.08" yaw="1.57079632679" color="0.1 0.1 0.1 1"/>
+
+  <xacro:macro name="rotor" params="index parent x y">
+    <link name="rotor_${index}_link">
+      <visual>
+        <geometry><cylinder radius="0.055" length="0.006"/></geometry>
+        <material name="rotor_${index}"><color rgba="0.15 0.15 0.15 0.8"/></material>
+      </visual>
+      <collision><geometry><cylinder radius="0.055" length="0.006"/></geometry></collision>
+      <inertial><mass value="0.005"/>
+        <inertia ixx="0.000004" ixy="0" ixz="0" iyy="0.000004" iyz="0" izz="0.000008"/>
+      </inertial>
+    </link>
+    <joint name="rotor_${index}_joint" type="fixed">
+      <parent link="${parent}"/><child link="rotor_${index}_link"/>
+      <origin xyz="${x} ${y} 0.015"/>
+    </joint>
+  </xacro:macro>
+  <xacro:rotor index="1" parent="drone_base_link" x="0.15" y="0.15"/>
+  <xacro:rotor index="2" parent="drone_base_link" x="0.15" y="-0.15"/>
+  <xacro:rotor index="3" parent="drone_base_link" x="-0.15" y="0.15"/>
+  <xacro:rotor index="4" parent="drone_base_link" x="-0.15" y="-0.15"/>
+</robot>

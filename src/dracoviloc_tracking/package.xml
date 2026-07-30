@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>dracoviloc_tracking</name>
+  <version>0.1.0</version>
+  <description>Ground-truth drone look-at tracking for the FAIRINO camera.</description>
+  <maintainer email="maintainer@example.com">DracoViLoc</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>geometry_msgs</depend>
+  <depend>moveit_ros_planning_interface</depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_eigen</depend>
+  <depend>tf2_ros</depend>
+  <depend>visualization_msgs</depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>
