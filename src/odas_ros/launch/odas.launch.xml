@@ -1,0 +1,45 @@
+<launch>
+  <!-- Arguments -->
+  <arg name="configuration_path" default="$(find-pkg-share odas_ros)/config/configuration.cfg"/>
+  <arg name="frame_id" default="odas"/>
+  <arg name="audio_queue_size" default="1"/>
+  <arg name="visualization" default="true"/>
+  <arg name="rviz" default="false"/>
+  <arg name="rviz_cfg" default="$(find-pkg-share odas_ros)/config/rviz/odas_rviz.rviz"/>
+  <arg name="local" default="true" />
+  <arg name="force_publish_tf" default="false"/>
+  <arg name="use_echo_cancellation" default="false"/>
+  <arg name="echo_cancelled_signal_topic" default="ec_signal"/>
+
+  <!-- ODAS -->
+  <group>
+    <node unless="$(var use_echo_cancellation)" pkg="odas_ros" exec="odas_server_node.py" name="odas_server_node">
+      <param name="configuration_path" value="$(var configuration_path)"/>
+      <param name="frame_id" value="$(var frame_id)"/>
+      <param name="audio_queue_size" value="$(var audio_queue_size)"/>
+    </node>
+    <node if="$(var use_echo_cancellation)" pkg="odas_ros" exec="odas_echocancel_filter_server_node.py" name="odas_server_node">
+      <param name="configuration_path" value="$(var configuration_path)"/>
+      <param name="frame_id" value="$(var frame_id)"/>
+      <param name="audio_queue_size" value="$(var audio_queue_size)"/>
+
+      <remap from="ec_signal" to="$(var echo_cancelled_signal_topic)"/>
+    </node>
+
+    <group if="$(var visualization)">
+      <node pkg="odas_ros" exec="odas_visualization_node.py" name="odas_visualization_node">
+        <param name="configuration_path" value="$(var configuration_path)"/>
+      </node>
+
+      <!-- Position of frame ODAS relative to robot Base_link -->
+      <node if="$(or $(var rviz) $(var force_publish_tf))" pkg="tf2_ros" exec="static_transform_publisher" name="odas_broadcaster" args="0 0 0 0 0 0 base_link $(var frame_id)" />
+
+      <!--Run Rviz-->
+      <node if="$(var rviz)" name="rviz" pkg="rviz2" exec="rviz2" args="-d $(var rviz_cfg)"/>
+    </group>
+    <group unless="$(var visualization)">
+      <!-- Position of frame ODAS relative to robot Base_link -->
+      <node if="$(var force_publish_tf)" pkg="tf2_ros" exec="static_transform_publisher" name="odas_broadcaster" args="0 0 0 0 0 0 base_link $(var frame_id)" />
+    </group>
+  </group>
+</launch>

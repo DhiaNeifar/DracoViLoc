@@ -10,7 +10,7 @@
     <joint name="joint3" value="-1.5707963267948966"/>
     <joint name="joint4" value="0.0"/>
     <joint name="joint5" value="1.5707963267948966"/>
-    <joint name="joint6" value="0.0"/>
+    <joint name="joint6" value="-3.141592653589793"/>
   </group_state>
   <disable_collisions link1="base_link" link2="shoulder_link" reason="Adjacent"/>
   <disable_collisions link1="base_link" link2="upperarm_link" reason="Never"/>
@@ -22,4 +22,14 @@
   <disable_collisions link1="wrist1_link" link2="wrist3_link" reason="Never"/>
   <disable_collisions link1="wrist2_link" link2="wrist3_link" reason="Adjacent"/>
   <disable_collisions link1="wrist3_link" link2="d435i_link" reason="Mounted"/>
+  <!-- The UMA16 collision box is only a visualization proxy. Ignore it while
+       evaluating audio-pointing plans; normal arm self-collisions stay active. -->
+  <disable_collisions link1="odas_link" link2="base_link" reason="Audio sensor proxy"/>
+  <disable_collisions link1="odas_link" link2="shoulder_link" reason="Audio sensor proxy"/>
+  <disable_collisions link1="odas_link" link2="upperarm_link" reason="Audio sensor proxy"/>
+  <disable_collisions link1="odas_link" link2="forearm_link" reason="Audio sensor proxy"/>
+  <disable_collisions link1="odas_link" link2="wrist1_link" reason="Audio sensor proxy"/>
+  <disable_collisions link1="odas_link" link2="wrist2_link" reason="Audio sensor proxy"/>
+  <disable_collisions link1="odas_link" link2="wrist3_link" reason="Mounted"/>
+  <disable_collisions link1="odas_link" link2="d435i_link" reason="Mounted sensors"/>
 </robot>

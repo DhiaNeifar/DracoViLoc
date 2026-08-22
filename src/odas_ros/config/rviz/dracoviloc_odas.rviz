@@ -1,0 +1,240 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /SSL potentials1
+        - /SSL potentials1/Topic1
+        - /SST tracked1
+        - /MotionPlanning1
+  - Class: rviz_common/Help
+    Name: Help
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Cell Size: 0.5
+      Plane Cell Count: 10
+      Value: true
+
+    # -------------------------------------------------------------------------
+    # TF. Off by default, but this is THE display to enable when the arm points
+    # somewhere unexpected: it shows world -> odas (your static mast transform)
+    # alongside world -> base_link. If the acoustic cloud appears rotated
+    # relative to the arm, the yaw in that static transform is wrong.
+    # -------------------------------------------------------------------------
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: false
+      Frame Timeout: 15
+      Frames:
+        All Enabled: false
+        world:
+          Value: true
+        odas:
+          Value: true
+        base_link:
+          Value: true
+        d435i_link:
+          Value: true
+        drone_base_link:
+          Value: true
+      Marker Scale: 0.5
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+      Update Interval: 0
+      Value: false
+
+    # -------------------------------------------------------------------------
+    # ODAS SSL potentials, from odas_visualization_node with the intensity
+    # PointField patch.
+    #
+    # These sit on a UNIT SPHERE around the `odas` frame, so with the mast at
+    # z = 1.5 the cloud is a 1 m ball at that height - not at the arm base.
+    # That is correct: they are directions, not positions.
+    #
+    # Min/Max Intensity are the ODAS Studio energy range slider. Autocompute
+    # MUST stay off, or a silent frame rescales the noise floor across the full
+    # rainbow and looks like a detection.
+    #
+    # Channel Name must match the PointField name added in
+    # odas_visualization_node.py. On mismatch RViz reports an error in Status
+    # rather than colouring the points.
+    # -------------------------------------------------------------------------
+    - Alpha: 1
+      Autocompute Intensity Bounds: false
+      Autocompute Value Bounds:
+        Max Value: 10
+        Min Value: -10
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: Intensity
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 0.5
+      Min Color: 0; 0; 0
+      Min Intensity: 0.05
+      Name: SSL potentials
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 8
+      Size (m): 0.009999999776482582
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /ssl_pcl2
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+
+    # -------------------------------------------------------------------------
+    # ODAS SST tracked sources - the ids that survived N_prob frames. This is
+    # what sst_drone_bridge.py consumes to drive the drone. Green so it reads
+    # clearly against the rainbow cloud, whose top end is red.
+    # -------------------------------------------------------------------------
+    - Alpha: 1
+      Arrow Length: 0.30000001192092896
+      Axes Length: 0.30000001192092896
+      Axes Radius: 0.009999999776482582
+      Class: rviz_default_plugins/PoseArray
+      Color: 0; 255; 128
+      Enabled: true
+      Head Length: 0.12000000476837158
+      Head Radius: 0.05000000074505806
+      Name: SST tracked
+      Shaft Length: 0.8799999952316284
+      Shaft Radius: 0.019999999552965164
+      Shape: Arrow (3D)
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /sst_poses
+      Value: true
+
+    - Class: rviz_default_plugins/RobotModel
+      Description Source: Topic
+      Description Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /drone/robot_description
+      Name: Drone
+      Value: true
+
+    - Alpha: 1
+      Class: rviz_default_plugins/RobotModel
+      Description Source: Topic
+      Description Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot_description
+      Name: Current FAIRINO
+      Update Interval: 0
+      Value: true
+
+    # The arm's viewing ray. Compare its direction against the SST arrows:
+    # when tracking is correct the two are parallel.
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Marker Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /tracking/desired_ray
+      Name: Tracking Ray
+      Value: true
+
+    - Class: moveit_rviz_plugin/MotionPlanning
+      Move Group Namespace: ""
+      MoveIt_Allow_Approximate_IK: true
+      MoveIt_Allow_External_Program: false
+      MoveIt_Allow_Replanning: true
+      MoveIt_Allow_Sensor_Positioning: false
+      MoveIt_Planning_Attempts: 20
+      MoveIt_Planning_Time: 10
+      MoveIt_Use_Cartesian_Path: false
+      MoveIt_Use_Constraint_Aware_IK: false
+      MoveIt_Workspace:
+        Center:
+          X: 0
+          Y: 0
+          Z: 0
+        Size:
+          X: 2
+          Y: 2
+          Z: 2
+      Name: MotionPlanning
+      Planning Request:
+        Query Goal State: false
+        Query Start State: false
+        Show Workspace: false
+      Planned Path:
+        Loop Animation: false
+        Robot Alpha: 0.15
+        Show Robot Collision: false
+        Show Robot Visual: true
+        Show Trail: false
+        State Display Time: 0.05 s
+        Trajectory Topic: display_planned_path
+      Planning Scene Topic: monitored_planning_scene
+      Robot Description: robot_description
+      Scene Geometry:
+        Scene Alpha: 1
+      Scene Robot:
+        Robot Alpha: 0.15
+        Show Robot Collision: false
+        Show Robot Visual: true
+      Value: true
+
+  Global Options:
+    # world, not odas. Everything now shares one tree through the static
+    # world -> odas transform: the arm, the drone, and the acoustic cloud.
+    Fixed Frame: world
+    Background Color: 48; 48; 48
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+  Value: true
+  Views:
+    Current:
+      # Pulled back from 4.0 to 6.0 and raised to z = 1.2: the acoustic cloud
+      # sits at the mast height, above the arm, so the default MoveIt framing
+      # cuts it off.
+      Class: rviz_default_plugins/Orbit
+      Distance: 6.0
+      Focal Point:
+        X: 0.5
+        Y: 0.0
+        Z: 1.2
+      Name: Current View
+      Pitch: 0.4
+      Target Frame: world
+      Yaw: -0.623
+Window Geometry:
+  Height: 975
+  QMainWindow State: 000000ff00000000fd0000000100000000000002b400000375fc0200000005fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000004100fffffffb000000100044006900730070006c006100790073010000003d00000123000000c900fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00670100000166000001910000018800fffffffb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007301000002fd000000b5000000a400ffffff000001f60000037500000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Width: 1200

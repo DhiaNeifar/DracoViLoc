@@ -8,7 +8,7 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
   <exec_depend>controller_manager</exec_depend>
   <exec_depend>dracoviloc_description</exec_depend>
-  <exec_depend>dracoviloc_drone</exec_depend>
+  <exec_depend>dracoviloc_odas</exec_depend>
   <exec_depend>dracoviloc_moveit_config</exec_depend>
   <exec_depend>dracoviloc_tracking</exec_depend>
   <exec_depend>gz_ros2_control</exec_depend>

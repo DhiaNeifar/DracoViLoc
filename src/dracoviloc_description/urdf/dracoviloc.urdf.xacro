@@ -45,6 +45,30 @@
             rpy="0 0 0"/>
   </joint>
 
+  <!-- UMA16v2 microphone-array frame. ODAS directions are expressed in this
+       frame; +Z is normal to the microphone plane. These placeholder mount
+       dimensions must be replaced with measurements from the final bracket. -->
+  <xacro:property name="odas_mount_x" value="0.0"/>
+  <xacro:property name="odas_mount_y" value="0.0"/>
+  <xacro:property name="odas_mount_z" value="0.13"/>
+  <link name="odas_link">
+    <visual>
+      <geometry><box size="0.126 0.126 0.008"/></geometry>
+      <material name="odas_blue"><color rgba="0.05 0.25 0.8 0.8"/></material>
+    </visual>
+    <collision><geometry><box size="0.126 0.126 0.008"/></geometry></collision>
+    <inertial>
+      <mass value="0.08"/>
+      <inertia ixx="0.000106" ixy="0" ixz="0"
+               iyy="0.000106" iyz="0" izz="0.000212"/>
+    </inertial>
+  </link>
+  <joint name="wrist3_to_odas" type="fixed">
+    <parent link="wrist3_link"/>
+    <child link="odas_link"/>
+    <origin xyz="${odas_mount_x} ${odas_mount_y} ${odas_mount_z}" rpy="0 0 0"/>
+  </joint>
+
   <ros2_control name="fairino_arm_system" type="system">
     <hardware>
       <xacro:if value="${sim}">

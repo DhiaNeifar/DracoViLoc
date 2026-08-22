@@ -126,11 +126,6 @@ install(TARGETS fairino_hardware
   LIBRARY DESTINATION lib/${PROJECT_NAME}
 )
 
-#launch files
-install(DIRECTORY launch
-  DESTINATION share/${PROJECT_NAME}/
-)
-
 #copy fairino SDK lib file to specfic path
 file(MAKE_DIRECTORY 
 "${CMAKE_INSTALL_PREFIX}/lib/${PROJECT_NAME}"

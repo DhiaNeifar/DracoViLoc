@@ -13,16 +13,6 @@ Visualization Manager:
     - Class: rviz_default_plugins/Grid
       Name: Grid
       Value: true
-    - Class: rviz_default_plugins/RobotModel
-      Description Source: Topic
-      Description Topic:
-        Depth: 1
-        Durability Policy: Transient Local
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /drone/robot_description
-      Name: Drone
-      Value: true
     - Alpha: 1
       Class: rviz_default_plugins/RobotModel
       Description Source: Topic
@@ -39,11 +29,55 @@ Visualization Manager:
       Enabled: true
       Marker Topic:
         Depth: 5
-        Durability Policy: Transient Local
+        Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /tracking/desired_ray
-      Name: Tracking Ray
+        Value: /audio/target_marker
+      Name: Audio Target Ray
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: false
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color Transformer: Intensity
+      Decay Time: 0.3
+      Enabled: true
+      Max Intensity: 0.5
+      Min Intensity: 0
+      Name: ODAS SSL Candidates
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 8
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /ssl_pcl2
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Alpha: 1
+      Arrow Length: 0.3
+      Axes Length: 0.3
+      Axes Radius: 0.01
+      Class: rviz_default_plugins/PoseArray
+      Color: 255; 25; 0
+      Enabled: true
+      Head Length: 0.07
+      Head Radius: 0.03
+      Name: ODAS Tracked Direction
+      Shaft Length: 1
+      Shaft Radius: 0.01
+      Shape: Arrow (3D)
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /sst_poses
       Value: true
     - Class: moveit_rviz_plugin/MotionPlanning
       Move Group Namespace: ""
@@ -66,6 +100,7 @@ Visualization Manager:
           Z: 2
       Name: MotionPlanning
       Planning Request:
+        Planning Group: arm
         Query Goal State: false
         Query Start State: false
         Show Workspace: false
