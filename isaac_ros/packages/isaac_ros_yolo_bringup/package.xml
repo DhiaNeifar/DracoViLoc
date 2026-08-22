@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>isaac_ros_yolo_bringup</name>
+  <version>0.1.0</version>
+  <description>Reusable bringup and visualization for custom YOLO models on Isaac ROS 3.2.</description>
+  <maintainer email="dhianeifar@todo.todo">dhianeifar</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>isaac_ros_dnn_image_encoder</exec_depend>
+  <exec_depend>isaac_ros_tensor_rt</exec_depend>
+  <exec_depend>isaac_ros_yolov8</exec_depend>
+  <exec_depend>message_filters</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>vision_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

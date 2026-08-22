@@ -82,4 +82,16 @@ __pycache__/
 # Ignore hidden files except .gitignore
 .*
 !.gitignore
+
+# Isaac ROS deployment artifacts. Keep the portable model and regression video
+# in DracoViLoc; generate TensorRT engines and Python environments per target.
+!isaac_ros/media/
+!isaac_ros/media/drone-video1.mp4
+!isaac_ros/models/
+!isaac_ros/models/drone_yolo11n_best.pt
+!isaac_ros/models/drone_yolo11n_best.onnx
+isaac_ros/models/*.plan
+isaac_ros/models/yolo/
+isaac_ros/models/*_engine/
+isaac_ros/results/
 src/vicoman_vision/realsense-ros/

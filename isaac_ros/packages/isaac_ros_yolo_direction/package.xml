@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>isaac_ros_yolo_direction</name>
+  <version>0.1.0</version>
+  <description>Project YOLO bounding-box centers into camera-frame direction rays.</description>
+  <maintainer email="dhianeifar@users.noreply.github.com">dhianeifar</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>isaac_ros_yolo_bringup</exec_depend>
+  <exec_depend>yolo_video_publisher</exec_depend>
+  <exec_depend>image_tools</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>vision_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
