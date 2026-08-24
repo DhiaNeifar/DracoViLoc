@@ -33,20 +33,13 @@ def generate_launch_description():
             "microphone_frame", default_value="odas_link",
             description="TF frame in which ODAS microphone directions are expressed."),
         SetParameter(name="use_sim_time", value=use_sim_time),
-        odas,
-        Node(
-            package="dracoviloc_odas",
-            executable="uma16_feeder",
-            arguments=["--lo", "3000", "--hi", "9000",
-                       "--frame-id", microphone_frame],
-            parameters=[{"use_sim_time": use_sim_time}],
-            output="screen"),
-        Node(
-            package="dracoviloc_odas",
-            executable="audio_target_tracker",
-            parameters=[{
-                "use_sim_time": use_sim_time,
-                "microphone_frame": microphone_frame,
-            }],
-            output="screen"),
+        odas
+       # Node(
+        #    package="dracoviloc_odas",
+         #   executable="audio_target_tracker",
+          #  parameters=[{
+           #     "use_sim_time": use_sim_time,
+            #    "microphone_frame": microphone_frame,
+            #}],
+            #output="screen"),
     ])
