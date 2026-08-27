@@ -22,7 +22,7 @@ target_link_libraries(arm_drone_tracker Eigen3::Eigen)
 
 add_executable(arm_audio_tracker src/arm_audio_tracker.cpp)
 ament_target_dependencies(arm_audio_tracker
-  geometry_msgs rclcpp sensor_msgs std_msgs trajectory_msgs)
+  geometry_msgs rclcpp sensor_msgs std_msgs tf2_ros trajectory_msgs)
 target_link_libraries(arm_audio_tracker Eigen3::Eigen)
 
 install(TARGETS arm_drone_tracker arm_audio_tracker DESTINATION lib/${PROJECT_NAME})

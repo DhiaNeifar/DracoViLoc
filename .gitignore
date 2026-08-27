@@ -83,6 +83,12 @@ __pycache__/
 .*
 !.gitignore
 
+# Audio fusion pipeline (dracoviloc_audio_fusion): the trt_env venv and the
+# AST TensorRT engine are machine-specific and not portable between Jetsons.
+/trt_env/
+/gre_env/
+src/dracoviloc_audio_fusion/models/*.engine
+
 # Isaac ROS deployment artifacts. Keep the portable model and regression video
 # in DracoViLoc; generate TensorRT engines and Python environments per target.
 !isaac_ros/media/

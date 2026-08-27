@@ -9,19 +9,22 @@ inference.
 ## Repository layout
 
 ```text
-src/                         Host ROS packages: arm, ODAS and tracking
+src/                         Host ROS packages: arm, ODAS, classification/fusion and tracking
 isaac_ros/packages/          DracoViLoc packages built in the Isaac container
 isaac_ros/models/            Portable YOLO checkpoint and ONNX model
 isaac_ros/media/             Bundled regression-test video
 isaac_ros/tools/             Model and test utilities
 scripts/                     Native and Isaac ROS deployment/build helpers
 docs/                        Installation documentation
+trt_env/                     AST TensorRT venv (machine-specific, not in git)
 ```
 
 The repository includes ODAS and its message packages directly. It does not
 depend on a separate `odas_ws`. NVIDIA Isaac ROS is treated as a target
 platform: DracoViLoc owns its YOLO overlay, while NVIDIA's packages remain in
-the already-installed Isaac ROS workspace.
+the already-installed Isaac ROS workspace. AST drone classification and the
+EKF bearing fusion (`src/dracoviloc_audio_fusion`) are likewise self-contained
+here rather than in a separate workspace.
 
 ## Host build
 
@@ -48,8 +51,14 @@ ros2 launch dracoviloc_bringup arm_audio_demo.launch.py \
 ```
 
 The simulation directly and smoothly moves only joints 1 and 4 toward the
-filtered audio direction. Joints 2, 3, 5 and 6 remain fixed. Full audio setup,
-frame calibration and troubleshooting are documented in
+fused audio direction. Joints 2, 3, 5 and 6 remain fixed. `arm_audio_tracker`
+consumes `/fused_target_pose`, produced by AST classification and EKF fusion
+of the ODAS tracks (`src/dracoviloc_audio_fusion`, started automatically by
+the launch above via `fusion_enabled:=true`, the default). That package
+needs a one-time `trt_env` venv and a machine-specific TensorRT engine —
+setup, the required frame alignment, and troubleshooting are documented in
+[`docs/AUDIO_FUSION_INTEGRATION.md`](docs/AUDIO_FUSION_INTEGRATION.md).
+ODAS/UMA-16 capture on its own is documented in
 [`src/dracoviloc_odas/README.md`](src/dracoviloc_odas/README.md).
 
 FAIRINO simulation, SDK preparation, physical-arm launch and safety checks are
@@ -94,8 +103,8 @@ in [`isaac_ros/README.md`](isaac_ros/README.md).
 
 ## Main output topics
 
-- `/audio/target_direction`: ODAS source direction used by the arm servo.
-- `/audio/target_valid`: stable-audio-source status.
+- `/audio_classifier/detection`: AST drone/not-drone verdict per ODAS track.
+- `/fused_target_pose`: EKF-fused bearing (azimuth, elevation), used by the arm servo.
 - `/detections_output`: Isaac ROS YOLO detections.
 - `/yolo/directions`: camera-frame rays through YOLO detection centers.
 - `/joint_states`: simulated or physical FAIRINO joint feedback.

@@ -1,9 +1,17 @@
 # DracoViLoc ODAS and UMA16v2
 
-`dracoviloc_odas` connects the bundled UMA16v2 feeder and ODAS localization to
-DracoViLoc. ODAS itself, `odas_ros`, its message packages, microphone geometry,
-and the retained configuration are all stored in this repository. No external
-ODAS workspace is required.
+> For the full acoustic pipeline — AST/GRE classification and EKF fusion into
+> `/fused_target_pose`, which is what `arm_audio_tracker` actually consumes —
+> see [`docs/AUDIO_FUSION_INTEGRATION.md`](../../docs/AUDIO_FUSION_INTEGRATION.md).
+> This document covers only ODAS capture and localization on their own.
+
+`dracoviloc_odas` connects ODAS localization to DracoViLoc. ODAS itself,
+`odas_ros`, its message packages, microphone geometry, and the retained
+configuration are all stored in this repository. No external ODAS workspace
+is required. ODAS now opens the UMA-16 directly (`raw.interface = soundcard`
+in `configuration.cfg`); the Butterworth-filtered feeder (`uma16_feeder_node.py`)
+and `audio_target_tracker.py` remain in `scripts/` but are no longer launched
+— see the fusion-integration doc above for why.
 
 ## Build
 
@@ -44,9 +52,10 @@ ros2 launch dracoviloc_odas audio_bringup.launch.py \
   use_sim_time:=false microphone_frame:=odas_link
 ```
 
-The feeder auto-detects the UMA16v2 and applies the 3000--9000 Hz Butterworth
-band configured by the launch wrapper. The ODAS configuration used at runtime
-is installed from `src/odas_ros/config/configuration.cfg`.
+ODAS opens the UMA16v2 directly (`raw.interface = soundcard`) rather than
+through a filtering feeder, so `/sst`/`/ssl`/`/sss` are full-band — required
+by the AST classifier in `dracoviloc_audio_fusion`. The ODAS configuration
+used at runtime is installed from `src/odas_ros/config/configuration.cfg`.
 
 ## Device busy
 
@@ -68,10 +77,9 @@ Repeat with a final `0` after testing to restore desktop audio.
 
 ## Important topics
 
-- `/ssl` and `/sst`: raw ODAS localization/tracking output.
-- `/audio/target_direction`: filtered world-frame direction.
-- `/audio/target_valid`: whether a stable source is available.
-- `/audio/target_marker`: green RViz direction marker.
+- `/ssl`, `/sst`, `/sss`: raw ODAS localization/tracking/separated-audio output.
+- `/audio_classifier/detection`: AST drone verdict per track (`dracoviloc_audio_fusion`).
+- `/fused_target_pose`: EKF-fused bearing (`dracoviloc_audio_fusion`).
 - `/arm_controller/joint_trajectory`: joint-1/joint-4 servo commands.
 
 The UMA16v2 estimates direction, not range. Marker length and target distance
