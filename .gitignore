@@ -89,6 +89,11 @@ __pycache__/
 /gre_env/
 src/dracoviloc_audio_fusion/models/*.engine
 
+# Centralized local model artifacts. The README is tracked, while weights,
+# portable exports, and machine-specific TensorRT engines remain local.
+/models/*
+!/models/README.md
+
 # Isaac ROS deployment artifacts. Keep the portable model and regression video
 # in DracoViLoc; generate TensorRT engines and Python environments per target.
 !isaac_ros/media/

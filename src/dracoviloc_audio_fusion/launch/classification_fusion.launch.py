@@ -37,6 +37,7 @@ def generate_launch_description():
 
     audio_enabled = LaunchConfiguration("audio_enabled")
     visual_enabled = LaunchConfiguration("visual_enabled")
+    ekf_enabled = LaunchConfiguration("ekf_enabled")
 
     odas_ekf_adapter = Node(
         package="dracoviloc_audio_fusion",
@@ -45,7 +46,8 @@ def generate_launch_description():
             "use_sim_time": True,
             "min_activity": ParameterValue(min_activity, value_type=float),
         }],
-        output="screen")
+        output="screen",
+        condition=IfCondition(ekf_enabled))
 
     ekf_fusion = Node(
         package="dracoviloc_audio_fusion",
@@ -59,7 +61,8 @@ def generate_launch_description():
             "audio_enabled": ParameterValue(audio_enabled, value_type=bool),
             "visual_enabled": ParameterValue(visual_enabled, value_type=bool),
         }],
-        output="screen")
+        output="screen",
+        condition=IfCondition(ekf_enabled))
 
     # AST and GRE each need TensorRT/pycuda and other packages that live only
     # in their own venv (trt_env / gre_env), not the system ROS Python, so
@@ -89,6 +92,8 @@ def generate_launch_description():
         ],
         name="ast_classifier_node",
         output="screen",
+        emulate_tty=True,
+        additional_env={"PYTHONUNBUFFERED": "1"},
         condition=IfCondition(ast_enabled))
 
     # PLACEHOLDER - see yolo_ekf_adapter.py's module docstring for what this
@@ -133,7 +138,7 @@ def generate_launch_description():
                         "alone even if GRE is also running."),
         DeclareLaunchArgument("use_tf_for_visual", default_value="false"),
         DeclareLaunchArgument(
-            "min_activity", default_value="0.3",
+            "min_activity", default_value="0.1",
             description="Shared ODAS-track activity floor for the adapter "
                         "and both classifiers."),
         DeclareLaunchArgument(
@@ -144,7 +149,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "ast_enabled", default_value="true",
             description="Run the AST classifier."),
-        DeclareLaunchArgument("threshold", default_value="0.5"),
+        DeclareLaunchArgument("threshold", default_value="0.2"),
         DeclareLaunchArgument("consecutive", default_value="3"),
         DeclareLaunchArgument(
             "always_classify", default_value="false",
@@ -198,6 +203,10 @@ def generate_launch_description():
                         "ast_enabled/gre_enabled, which instead control "
                         "whether those nodes run at all. Normally forwarded "
                         "from the bringup launch's own audio_enabled."),
+        DeclareLaunchArgument(
+            "ekf_enabled", default_value="false",
+            description="Start odas_ekf_adapter and ekf_fusion_node. Defaults "
+                        "off so AST/GRE can be tested without fusion."),
         DeclareLaunchArgument(
             "visual_enabled", default_value="false",
             description="Runs yolo_ekf_adapter (PLACEHOLDER - see its "

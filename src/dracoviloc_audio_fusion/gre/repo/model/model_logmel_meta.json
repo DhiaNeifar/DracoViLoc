@@ -145,9 +145,9 @@
     0.0957299992442131
   ],
   "decision": {
-    "threshold_on": 0.4,
-    "threshold_off": 0.12,
-    "min_presence_s": 0.8,
+    "threshold_on": 0.1,
+    "threshold_off": 0.05,
+    "min_presence_s": 0.1,
     "min_absence_s": 0.1,
     "calibration_source": "reports/CALIBRATION_LOGMEL_V2.md (point #1, critere invers  rappel(sim_factor=4)>=50% ET fragmentation<=1.5, minimiser FA/heure)",
     "calibration_previous": {

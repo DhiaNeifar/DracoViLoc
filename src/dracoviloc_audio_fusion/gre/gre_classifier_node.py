@@ -52,7 +52,7 @@ rotor harmonic would land in the wrong mel band.
 DECISION LOGIC ALREADY INCLUDED
 -------------------------------
 push_audio() returns dicts already carrying the hysteresis decision from
-meta.json: threshold_on 0.4, threshold_off 0.12, min_presence_s 0.8,
+meta.json: threshold_on 0.1, threshold_off 0.05, min_presence_s 0.1,
 min_absence_s 0.1. This node does NOT add its own streak counter the way the
 AST node does - that would be a second debounce stacked on a tuned one, and
 would only delay detections.
@@ -322,6 +322,12 @@ class GreClassifierNode(Node):
         out.vector.y = 1.0 if decision else 0.0
         out.vector.z = score
         self.pub.publish(out)
+
+        self.get_logger().info(
+            f'GRE confidence={score:.3f} decision='
+            f'{"DRONE" if decision else "not-drone"} '
+            f'track={track_id} ch={ch}',
+            throttle_duration_sec=1.0)
 
         if result.get('event_start'):
             self.get_logger().info(

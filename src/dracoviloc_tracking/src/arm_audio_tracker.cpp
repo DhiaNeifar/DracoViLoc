@@ -9,7 +9,9 @@
 #include <vector>
 #include <Eigen/Geometry>
 #include "geometry_msgs/msg/point_stamped.hpp"
+#include "geometry_msgs/msg/pose_array.hpp"
 #include "geometry_msgs/msg/vector3_stamped.hpp"
+#include "odas_ros_msgs/msg/odas_sst_array_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "std_msgs/msg/bool.hpp"
@@ -77,6 +79,18 @@ public:
     // frame_id.
     tracking_frame_ = declare_parameter(
       "tracking_frame", std::string("table_mic_link"));
+    ekf_enabled_ = declare_parameter("ekf_enabled", true);
+    direct_classifier_source_ = declare_parameter(
+      "direct_classifier_source", std::string("gre"));
+    direct_min_activity_ = declare_parameter("direct_min_activity", 0.10);
+    direct_class_timeout_ = declare_parameter("direct_class_timeout", 5.0);
+    if (direct_classifier_source_ != "gre" &&
+        direct_classifier_source_ != "ast" &&
+        direct_classifier_source_ != "either" &&
+        direct_classifier_source_ != "yolo") {
+      throw std::invalid_argument(
+        "direct_classifier_source must be gre, ast, either, or yolo");
+    }
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -87,11 +101,41 @@ public:
       "/joint_states", rclcpp::SensorDataQoS(),
       [this](const sensor_msgs::msg::JointState::SharedPtr msg) {joint_callback(*msg);});
 
-    fused_sub_ = create_subscription<geometry_msgs::msg::PointStamped>(
-      "/fused_target_pose", 10,
-      [this](const geometry_msgs::msg::PointStamped::SharedPtr msg) {
-        fused_callback(*msg);
-      });
+    if (ekf_enabled_) {
+      fused_sub_ = create_subscription<geometry_msgs::msg::PointStamped>(
+        "/fused_target_pose", 10,
+        [this](const geometry_msgs::msg::PointStamped::SharedPtr msg) {
+          fused_callback(*msg);
+        });
+    } else {
+      if (direct_classifier_source_ == "yolo") {
+        yolo_sub_ = create_subscription<geometry_msgs::msg::PoseArray>(
+          "/yolo/directions", 10,
+          [this](const geometry_msgs::msg::PoseArray::SharedPtr msg) {
+            yolo_callback(*msg);
+          });
+      } else {
+        sst_sub_ = create_subscription<odas_ros_msgs::msg::OdasSstArrayStamped>(
+          "/sst", 10,
+          [this](const odas_ros_msgs::msg::OdasSstArrayStamped::SharedPtr msg) {
+            sst_callback(*msg);
+          });
+        if (direct_classifier_source_ == "ast" || direct_classifier_source_ == "either") {
+          ast_sub_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
+            "/audio_classifier/detection", 10,
+            [this](const geometry_msgs::msg::Vector3Stamped::SharedPtr msg) {
+              classifier_callback(*msg, ast_verdict_, have_ast_verdict_);
+            });
+        }
+        if (direct_classifier_source_ == "gre" || direct_classifier_source_ == "either") {
+          gre_sub_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
+            "/gre_classifier/detection", 10,
+            [this](const geometry_msgs::msg::Vector3Stamped::SharedPtr msg) {
+              classifier_callback(*msg, gre_verdict_, have_gre_verdict_);
+            });
+        }
+      }
+    }
 
     // Kept for compatibility: an external supervisor can still veto motion.
     // Nothing in the EKF chain publishes it, so it defaults to permitting.
@@ -101,20 +145,93 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         external_veto_ = !msg->data;
       });
-
     timer_ = create_wall_timer(std::chrono::milliseconds(50), [this]() {update();});
-    RCLCPP_INFO(get_logger(),
-      "Audio servo at 20 Hz from /fused_target_pose; only joint1 and joint4 move");
+    RCLCPP_INFO(get_logger(), "Servo at 20 Hz in %s mode%s; only joint1 and joint4 move",
+      ekf_enabled_ ? "EKF" : "direct",
+      ekf_enabled_ ? "" : (" (source=" + direct_classifier_source_ + ")").c_str());
   }
 
 private:
   struct WristSample {double q4; Eigen::Vector3d normal;};
+  struct Verdict {
+    bool is_drone;
+    double confidence;
+    rclcpp::Time received;
+  };
 
   static double angle(const Eigen::Vector3d & a, const Eigen::Vector3d & b) {
     return std::acos(std::clamp(a.dot(b), -1.0, 1.0));
   }
   static Eigen::AngleAxisd rz(double value) {
     return Eigen::AngleAxisd(value, Eigen::Vector3d::UnitZ());
+  }
+
+  void yolo_callback(const geometry_msgs::msg::PoseArray & msg) {
+    if (msg.poses.empty()) {return;}
+    const auto & point = msg.poses.front().position;
+    const Eigen::Vector3d local(point.x, point.y, point.z);
+    if (local.norm() < 1e-6) {return;}
+    accept_local_direction(local.normalized(), msg.header.frame_id);
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+      "direct YOLO target ray=(%.3f, %.3f, %.3f)",
+      point.x, point.y, point.z);
+  }
+
+  void classifier_callback(
+    const geometry_msgs::msg::Vector3Stamped & msg,
+    Verdict & verdict, bool & have_verdict)
+  {
+    verdict = Verdict{msg.vector.y >= 0.5, msg.vector.z, now()};
+    have_verdict = true;
+  }
+
+  const Verdict * live_verdict(const rclcpp::Time & stamp) {
+    const Verdict * best = nullptr;
+    const auto consider = [&](const Verdict & verdict, bool have_verdict) {
+      if (!have_verdict) {return;}
+      if (!verdict.is_drone ||
+          (stamp - verdict.received).seconds() > direct_class_timeout_) {return;}
+      if (best == nullptr || verdict.confidence > best->confidence) {best = &verdict;}
+    };
+    if (direct_classifier_source_ == "ast" || direct_classifier_source_ == "either") {
+      consider(ast_verdict_, have_ast_verdict_);
+    }
+    if (direct_classifier_source_ == "gre" || direct_classifier_source_ == "either") {
+      consider(gre_verdict_, have_gre_verdict_);
+    }
+    return best;
+  }
+
+  void sst_callback(const odas_ros_msgs::msg::OdasSstArrayStamped & msg) {
+    const auto stamp = now();
+    const odas_ros_msgs::msg::OdasSst * selected = nullptr;
+    const auto * verdict = live_verdict(stamp);
+    for (const auto & source : msg.sources) {
+      if (source.activity < direct_min_activity_) {continue;}
+      if (verdict != nullptr &&
+          (selected == nullptr || source.activity > selected->activity)) {
+        selected = &source;
+      }
+    }
+    if (selected == nullptr) {
+      RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 5000,
+        "direct mode waiting for %s detection and an active ODAS direction",
+        direct_classifier_source_.c_str());
+      return;
+    }
+    const double norm = std::sqrt(
+      selected->x * selected->x + selected->y * selected->y + selected->z * selected->z);
+    if (norm < 1e-6) {return;}
+    geometry_msgs::msg::PointStamped target;
+    target.header = msg.header;
+    target.point.x = std::atan2(selected->y, selected->x);
+    target.point.y = std::asin(std::clamp(selected->z / norm, -1.0, 1.0));
+    target.point.z = 1.0;
+    fused_callback(target);
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+      "direct target confidence=%.2f activity=%.2f az=%.1fdeg el=%.1fdeg",
+      verdict->confidence, selected->activity,
+      target.point.x * 180.0 / M_PI, target.point.y * 180.0 / M_PI);
   }
 
   // Conversions 1 and 2: azimuth/elevation in the tracking frame become a
@@ -127,8 +244,15 @@ private:
     const double ce = std::cos(el);
     const Eigen::Vector3d local(ce * std::cos(az), ce * std::sin(az), std::sin(el));
 
+    accept_local_direction(local, msg.header.frame_id);
+  }
+
+  void accept_local_direction(
+    const Eigen::Vector3d & local, const std::string & frame_id)
+  {
+
     const std::string source =
-      msg.header.frame_id.empty() ? tracking_frame_ : msg.header.frame_id;
+      frame_id.empty() ? tracking_frame_ : frame_id;
 
     Eigen::Vector3d world_dir;
     try {
@@ -188,8 +312,8 @@ private:
     if (!have_joints_) {
       fixed_ = ordered;
       commanded_ = ordered;
-      wrist_lookup_.reserve(630);
-      for (double q4 = -2.0 * M_PI; q4 <= 2.0 * M_PI; q4 += 0.02) {
+      wrist_lookup_.reserve(160);
+      for (double q4 = -M_PI_2; q4 <= M_PI_2; q4 += 0.02) {
         auto trial = fixed_;
         trial[0] = 0.0;
         trial[3] = q4;
@@ -215,13 +339,13 @@ private:
       const Eigen::Vector3d normal = rz(q1) * sample.normal;
       const double error = angle(normal, desired);
       const double d1 = q1 - current[0];
-      const double d4 = std::remainder(sample.q4 - current[3], 2.0 * M_PI);
+      const double d4 = sample.q4 - current[3];
       const double cost = error * error + motion_penalty_ * (d1 * d1 + d4 * d4);
       if (cost < best_cost) {
         best_cost = cost;
         best = fixed_;
         best[0] = q1;
-        best[3] = current[3] + d4;
+        best[3] = sample.q4;
       }
     }
     return best;
@@ -234,24 +358,34 @@ private:
     last_update_ = steady_now;
     Eigen::Vector3d desired; std::array<double, 6> reference;
     bool target_available = false;
+    bool external_veto = false;
+    bool have_direction = false;
+    double target_age = std::numeric_limits<double>::infinity();
     {
       std::lock_guard<std::mutex> lock(mutex_); const auto stamp = now();
       if (!have_joints_) {return;}
       // Conversion 3: freshness replaces /audio/target_valid. The EKF stops
       // publishing when it has nothing to report, so an old message is the
       // only signal that the target is gone.
-      target_available = !external_veto_ && have_direction_ &&
-        (stamp - last_target_).seconds() <= target_timeout_;
+      external_veto = external_veto_;
+      have_direction = have_direction_;
+      if (have_direction_) {
+        target_age = (stamp - last_target_).seconds();
+      }
+      target_available = !external_veto && have_direction && target_age <= target_timeout_;
       desired = filtered_direction_; reference = commanded_;
     }
     if (command_pub_->get_subscription_count() == 0) {return;}
     auto target = reference;
-    if (target_available && angle(microphone_normal(reference), desired) >= angular_deadband_) {
+    const double pointing_error = have_direction ?
+      angle(microphone_normal(reference), desired) : 0.0;
+    if (target_available && pointing_error >= angular_deadband_) {
       target = solve(reference, desired);
     }
+    const double solution_error = have_direction ?
+      angle(microphone_normal(target), desired) : 0.0;
     for (const std::size_t index : {std::size_t(0), std::size_t(3)}) {
       double error = target[index] - commanded_[index];
-      if (index == 3) {error = std::remainder(error, 2.0 * M_PI);}
       const double requested_velocity = target_available ?
         std::clamp(error / command_horizon_, -max_velocity_, max_velocity_) : 0.0;
       const double velocity_change = std::clamp(
@@ -261,6 +395,7 @@ private:
       commanded_[index] += velocities_[index] * dt;
     }
     commanded_[0] = std::clamp(commanded_[0], -3.0543, 3.0543);
+    commanded_[3] = std::clamp(commanded_[3], -M_PI_2, M_PI_2);
     commanded_[1] = fixed_[1]; commanded_[2] = fixed_[2];
     commanded_[4] = fixed_[4]; commanded_[5] = fixed_[5];
     trajectory_msgs::msg::JointTrajectory command;
@@ -269,9 +404,17 @@ private:
     point.positions.assign(commanded_.begin(), commanded_.end());
     point.time_from_start = rclcpp::Duration::from_seconds(command_horizon_);
     command.points.push_back(point); command_pub_->publish(command);
-    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
-      "servo q1=%.3f q4=%.3f target=%s; q2/q3/q5/q6 fixed",
-      commanded_[0], commanded_[3], target_available ? "ekf" : "hold");
+    const char * state = target_available ?
+      (pointing_error < angular_deadband_ ? "reached/deadband" : "tracking") :
+      (external_veto ? "hold/veto" :
+       (!have_direction ? "hold/no-target" : "hold/stale"));
+    RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 1000,
+      "servo q1=%.3f q4=%.3f state=%s age=%.2fs "
+      "error=%.1fdeg solution_error=%.1fdeg target_q1=%.3f target_q4=%.3f "
+      "desired_world=(%.2f,%.2f,%.2f); q2/q3/q5/q6 fixed",
+      commanded_[0], commanded_[3], state, target_age,
+      pointing_error * 180.0 / M_PI, solution_error * 180.0 / M_PI,
+      target[0], target[3], desired.x(), desired.y(), desired.z());
   }
 
   const std::array<std::string, 6> names_{
@@ -279,6 +422,10 @@ private:
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr command_pub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr fused_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr yolo_sub_;
+  rclcpp::Subscription<odas_ros_msgs::msg::OdasSstArrayStamped>::SharedPtr sst_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr ast_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr gre_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr valid_sub_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -289,9 +436,15 @@ private:
   Eigen::Vector3d filtered_direction_{Eigen::Vector3d::UnitX()};
   rclcpp::Time last_target_{0, 0, RCL_ROS_TIME};
   bool have_joints_{false}, external_veto_{false}, have_direction_{false};
+  bool ekf_enabled_{true};
+  Verdict ast_verdict_{false, 0.0, rclcpp::Time(0, 0, RCL_ROS_TIME)};
+  Verdict gre_verdict_{false, 0.0, rclcpp::Time(0, 0, RCL_ROS_TIME)};
+  bool have_ast_verdict_{false}, have_gre_verdict_{false};
   double target_timeout_, smoothing_alpha_, angular_deadband_, motion_penalty_;
   double command_horizon_, max_velocity_, max_acceleration_;
+  double direct_min_activity_, direct_class_timeout_;
   std::string world_frame_, tracking_frame_;
+  std::string direct_classifier_source_;
 };
 
 int main(int argc, char ** argv) {

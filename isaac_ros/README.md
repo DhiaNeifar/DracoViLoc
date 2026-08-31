@@ -1,105 +1,250 @@
-# DracoViLoc Isaac ROS YOLO overlay
+# DracoViLoc Isaac ROS YOLO
 
-This directory is the source of truth for DracoViLoc's YOLO pipeline. NVIDIA
-Isaac ROS itself remains installed in its normal development workspace. The
-deployment script copies only these project-owned packages and assets into that
-workspace because they must be built and run inside the Isaac ROS container.
+Isaac ROS YOLO runs inside NVIDIA's Isaac ROS development container.
+DracoViLoc/RViz runs on the host. The two processes communicate through ROS 2
+DDS; the host launch must not source or include the container workspace.
 
-## Contents
+The authoritative trained checkpoint is stored under:
 
-- `packages/isaac_ros_yolo_bringup`: TensorRT preprocessing, decoding and visualization.
-- `packages/isaac_ros_yolo_direction`: converts detection centers into camera-frame rays.
-- `packages/yolo_video_publisher`: publishes the bundled MP4 or a V4L2 camera.
-- `models/drone_yolo11n_best.pt`: training checkpoint.
-- `models/drone_yolo11n_best.onnx`: portable inference model.
-- `media/drone-video1.mp4`: reproducible video-inference test.
-- `tools`: export, verification, resizing and result-recording utilities.
+```text
+~/DracoViLoc/models/yolo/
+```
 
-The TensorRT `.plan` is intentionally not stored. Generate it on the target
-Jetson because it is tied to that GPU, JetPack, CUDA and TensorRT version.
+The Isaac workspace `models/` directory is only a deployment/runtime copy.
+When a new YOLO version is selected, update DracoViLoc's model directory first.
 
-## Deploy on the host
+## Project-owned packages
 
-The target card must already have Isaac ROS 3.2 at
-`$HOME/workspaces/isaac_ros-dev`.
+- `isaac_ros_yolo_bringup`: preprocessing, eight-block low-memory TensorRT
+  inference, YOLO decoding, and annotated visualization.
+- `isaac_ros_yolo_direction`: selects the highest-confidence box and publishes
+  `/yolo/directions` and `/yolo/target_marker`.
+- `yolo_video_publisher`: publishes a V4L2 camera or prerecorded video.
+
+## 1. Deploy the latest checkpoint
+
+On the host:
+
+```bash
+cp ~/DracoViLoc/models/yolo/drone_yolo11n_20260825_best.pt \
+  ~/workspaces/isaac_ros-dev/models/
+```
+
+To deploy updated project packages as well:
 
 ```bash
 cd ~/DracoViLoc
 ./scripts/deploy_isaac_ros.sh ~/workspaces/isaac_ros-dev
+```
 
+This command overwrites the corresponding package directories in the Isaac
+workspace. Before using it on an already validated installation, review the
+diff and make sure any live workspace calibration changes have first been
+copied back into `isaac_ros/packages/`.
+
+The deployment overlay can contain an older generic
+`drone_yolo11n_best` model. The explicitly versioned checkpoint copied from
+`~/DracoViLoc/models/yolo` is the one used below.
+
+## 2. Enter the container
+
+```bash
 cd ~/workspaces/isaac_ros-dev
-./src/isaac_ros_common/scripts/run_dev.sh
+./src/isaac_ros_common/scripts/run_dev.sh -b
 ```
 
-## Build inside the container
+Confirm the acoustic camera is visible inside it:
 
 ```bash
-/workspaces/isaac_ros-dev/scripts/build_dracoviloc_yolo.sh
-source /workspaces/isaac_ros-dev/install/setup.bash
+v4l2-ctl --list-devices
 ```
 
-If this is a new/recreated container, install the runtime dependencies first:
+The validated camera device is `/dev/video0`.
+
+## 3. Install container dependencies once
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y \
-  ros-humble-magic-enum \
-  ros-humble-foxglove-msgs \
-  ros-humble-image-tools
+sudo apt update
+sudo apt install -y \
+  v4l-utils \
+  ros-humble-image-tools \
+  ros-humble-magic-enum
 ```
 
-## Generate the target-specific engine
+Use a persistent/committed container image if these packages should survive a
+container recreation. Do not install generic PyPI PyTorch: it may download a
+second CUDA 13/cuDNN stack, conflict with JetPack, and fill the filesystem.
 
-```bash
-/workspaces/isaac_ros-dev/scripts/generate_tensorrt_engine.sh
+## 4. YOLO export environment
+
+The validated interpreter is:
+
+```text
+/workspaces/isaac_ros-dev/models/yolo/bin/python3
 ```
 
-Once `models/drone_yolo11n_best.plan` exists and the TensorRT node is waiting
-for input, stop it with `Ctrl+C`.
+Validated key versions:
 
-## Test with the bundled video
+```text
+numpy        1.24.4
+pillow       10.4.0
+onnx         1.16.1
+ml-dtypes    0.3.2
+ultralytics  8.4.123
+```
+
+Verify the existing Jetson-compatible PyTorch rather than reinstalling it:
 
 ```bash
+/workspaces/isaac_ros-dev/models/yolo/bin/python3 -c \
+  "import torch, ultralytics, onnx; print(torch.__version__, ultralytics.__version__, onnx.__version__)"
+```
+
+## 5. Export PT to ONNX
+
+```bash
+cd /workspaces/isaac_ros-dev
+
+models/yolo/bin/python3 scripts/export_yolo.py \
+  --model models/drone_yolo11n_20260825_best.pt \
+  --imgsz 640
+```
+
+This creates:
+
+```text
+/workspaces/isaac_ros-dev/models/drone_yolo11n_20260825_best.onnx
+```
+
+The export uses static batch 1, `640x640`, and no embedded NMS. For one drone
+class, the expected raw output is `[1,5,8400]`: four box values plus one class
+score.
+
+Optional verification:
+
+```bash
+models/yolo/bin/python3 scripts/verify_yolo_onnx.py \
+  --model models/drone_yolo11n_20260825_best.onnx \
+  --num-classes 1 \
+  --imgsz 640
+```
+
+## 6. Generate the TensorRT plan
+
+Stop other GPU-heavy processes first:
+
+```bash
+cd /workspaces/isaac_ros-dev
+
+/usr/src/tensorrt/bin/trtexec \
+  --onnx=/workspaces/isaac_ros-dev/models/drone_yolo11n_20260825_best.onnx \
+  --saveEngine=/workspaces/isaac_ros-dev/models/drone_yolo11n_20260825_best.plan \
+  --fp16 \
+  --skipInference
+```
+
+TensorRT may remain at `Local timing cache in use` for several minutes while
+profiling tactics. If `tegrastats` shows changing CPU/GPU activity, wait.
+
+```bash
+ls -lh \
+  /workspaces/isaac_ros-dev/models/drone_yolo11n_20260825_best.onnx \
+  /workspaces/isaac_ros-dev/models/drone_yolo11n_20260825_best.plan
+```
+
+Generate the plan before starting the integrated pipeline. Do not let the
+launch rebuild it while AST, GRE, Gazebo, and RViz are using memory.
+
+## 7. Build the overlay
+
+```bash
+cd /workspaces/isaac_ros-dev
 source /opt/ros/humble/setup.bash
-source /workspaces/isaac_ros-dev/install/setup.bash
-ros2 launch isaac_ros_yolo_direction yolo_video.launch.py
+
+colcon build --symlink-install \
+  --packages-up-to \
+    isaac_ros_yolo_bringup \
+    isaac_ros_yolo_direction \
+    yolo_video_publisher \
+  --cmake-args -DBUILD_TESTING=OFF
+
+source install/setup.bash
 ```
 
-This launches inference, the native video publisher, direction projection,
-visualization and the image viewer. Useful checks are:
+## 8. Run the live camera
+
+```bash
+cd /workspaces/isaac_ros-dev
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+ros2 launch isaac_ros_yolo_direction yolo_camera.launch.py \
+  camera:=/dev/video0 \
+  model_path:=/workspaces/isaac_ros-dev/models/drone_yolo11n_20260825_best.onnx \
+  engine_path:=/workspaces/isaac_ros-dev/models/drone_yolo11n_20260825_best.plan \
+  width:=640 \
+  height:=480 \
+  camera_fps:=30 \
+  publish_rate:=15.0 \
+  direction_frame:=table_mic_link \
+  use_viewer:=true
+```
+
+- `use_viewer:=true` opens the annotated image window.
+- `use_viewer:=false` keeps inference and ROS output without that window.
+- `direction_frame:=table_mic_link` is required for the current
+  hardware-in-the-loop simulation because the physical camera remains fixed.
+
+The publisher selects only the highest-confidence box. Its center becomes a
+direction `(x,y,1)`; there is no depth estimate. The mounted-camera convention
+currently inverts image X and Y. `/yolo/target_marker` uses the latest TF so
+wall time from the camera does not conflict with Gazebo `/clock`.
+
+## 9. Verify
 
 ```bash
 ros2 topic hz /image
 ros2 topic hz /detections_output
 ros2 topic echo /yolo/directions --once
+ros2 topic echo /yolo/target_marker --once
 ```
 
-## Run the acoustic camera
+Outputs:
 
-The camera is expected to appear as `/dev/video0` by default:
+- `/detections_output`: YOLO boxes and confidence.
+- `/yolov8_processed_image`: annotated image.
+- `/yolo/directions`: one ray for the best box.
+- `/yolo/target_marker`: blue RViz arrow.
+
+## 10. Integrated host launch
+
+Leave YOLO running in the container. Open a separate, clean host terminal and
+run the GRE + AST + ODAS + RViz command in the root README. Do not source the
+Isaac install on the host.
+
+The current validated host mode is `tracking_mode:=direct_yolo`. EKF and the
+placeholder YOLO-to-EKF adapter are disabled.
+
+## Troubleshooting
+
+### `v4l2-ctl` not found
 
 ```bash
-ros2 launch isaac_ros_yolo_direction yolo_camera.launch.py \
-  camera:=/dev/video0 \
-  width:=640 height:=480 \
-  horizontal_fov_deg:=100.0
+sudo apt install -y v4l-utils
 ```
 
-Override `model_path` and `engine_path` if necessary. The direction output is
-`/yolo/directions` in frame `uma16_camera_direction`.
+### Isaac package not found on the host
 
-## Export or verify the model
+Expected: Isaac packages are container-only. Start YOLO inside the container;
+do not launch it from `arm_audio_demo.launch.py`.
 
-Create the Ultralytics environment outside `src`, then run:
+### `NvMapMemAlloc... error 12`
 
-```bash
-python3 /workspaces/isaac_ros-dev/scripts/export_yolo.py \
-  --model /workspaces/isaac_ros-dev/models/drone_yolo11n_best.pt --imgsz 640
+Stop duplicate ROS launches and engine builders, confirm the `.plan` already
+exists, and retry the runtime alone. The launch uses `num_blocks=8` to reduce
+NITROS memory.
 
-python3 /workspaces/isaac_ros-dev/scripts/verify_yolo_onnx.py \
-  --model /workspaces/isaac_ros-dev/models/drone_yolo11n_best.onnx \
-  --num-classes 1 --imgsz 640
-```
+### Engine generation looks frozen
 
-The expected output tensor is `[1, 5, 8400]`: four box values plus the single
-`drone` class score.
+Check `tegrastats`. If utilization changes, TensorRT is still profiling and
+should be allowed to finish.

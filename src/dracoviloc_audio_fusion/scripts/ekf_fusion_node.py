@@ -274,6 +274,8 @@ class EkfFusionNode(Node):
         self.last_accepted = None
         self.stats = {'acoustic_ok': 0, 'acoustic_rej': 0,
                       'visual_ok': 0, 'visual_rej': 0, 'gated_out': 0,
+                      'gated_no_class': 0, 'gated_low_conf': 0,
+                      'track_locked': 0,
                       'by_ast': 0, 'by_gre': 0}
 
         self.tf_buffer = tf2_ros.Buffer()
@@ -483,8 +485,13 @@ class EkfFusionNode(Node):
             return
 
         c = self._lookup_class(track_id, t)
-        if c is None or c.confidence < self.min_confidence:
+        if c is None:
             self.stats['gated_out'] += 1
+            self.stats['gated_no_class'] += 1
+            return
+        if c.confidence < self.min_confidence:
+            self.stats['gated_out'] += 1
+            self.stats['gated_low_conf'] += 1
             return
 
         # Follow one track at a time. Switching only after the current one has
@@ -494,6 +501,7 @@ class EkfFusionNode(Node):
         if self.active_track is not None and track_id != self.active_track:
             if (self.last_accepted is not None
                     and now - self.last_accepted < self.track_timeout):
+                self.stats['track_locked'] += 1
                 return
             self.get_logger().info(
                 f'switching track {self.active_track} -> {track_id}')
@@ -614,7 +622,9 @@ class EkfFusionNode(Node):
         if not self.ekf.initialised:
             self.get_logger().info(
                 f'waiting for a classified drone bearing | '
-                f'gated out {s["gated_out"]} | '
+                f'gated {s["gated_out"]} '
+                f'(no-class {s["gated_no_class"]}, '
+                f'low-confidence {s["gated_low_conf"]}) | '
                 f'AST cache {len(self.ast_class)} '
                 f'GRE cache {len(self.gre_class)}')
             return
@@ -629,6 +639,9 @@ class EkfFusionNode(Node):
             f'sigma {math.degrees(math.sqrt(self.ekf.P[AZ, AZ])):.2f} deg | '
             f'ac {s["acoustic_ok"]}/{s["acoustic_ok"] + s["acoustic_rej"]} '
             f'(AST {s["by_ast"]} GRE {s["by_gre"]}) '
+            f'gate(no-class {s["gated_no_class"]}, '
+            f'low-conf {s["gated_low_conf"]}, '
+            f'track-lock {s["track_locked"]}) '
             f'vis {s["visual_ok"]}/{s["visual_ok"] + s["visual_rej"]} | '
             f'last {age:.1f}s')
 

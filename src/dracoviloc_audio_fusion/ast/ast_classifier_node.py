@@ -81,18 +81,26 @@ typed fields.
 import argparse
 import json
 import sys
+import traceback
 from pathlib import Path
 
-import numpy as np
-from scipy.signal import resample_poly
+print('[AST] Python process started; importing dependencies...', flush=True)
+try:
+    import numpy as np
+    from scipy.signal import resample_poly
 
-import rclpy
-from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+    import rclpy
+    from rclpy.node import Node
+    from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
-from geometry_msgs.msg import Vector3Stamped
-from audio_utils_msgs.msg import AudioFrame
-from odas_ros_msgs.msg import OdasSstArrayStamped
+    from geometry_msgs.msg import Vector3Stamped
+    from audio_utils_msgs.msg import AudioFrame
+    from odas_ros_msgs.msg import OdasSstArrayStamped
+except BaseException:
+    print('[AST] DEPENDENCY IMPORT FAILED:', file=sys.stderr, flush=True)
+    traceback.print_exc()
+    raise
+print('[AST] Dependencies imported.', flush=True)
 
 
 AST_SR = 16000
@@ -109,6 +117,7 @@ class AstClassifierNode(Node):
         self.args = args
 
         sys.path.insert(0, str(args.project_dir))
+        print('[AST] Initializing CUDA and TensorRT runtime...', flush=True)
         try:
             # MUST come before TRTEngine - it creates the CUDA context that
             # cuda.Stream() needs. See the CUDA CONTEXT note above.
@@ -123,11 +132,14 @@ class AstClassifierNode(Node):
                 f'[ast]   grep system-site ~/trt_env/pyvenv.cfg   -> must be true')
 
         self.cuda_ctx = pycuda.autoinit.context
+        print('[AST] CUDA runtime ready.', flush=True)
 
         self.get_logger().info(f'loading engine {args.engine}')
         self.engine = TRTEngine(str(args.engine))
+        print('[AST] TensorRT engine loaded.', flush=True)
 
         model_dir = args.model_dir or (args.project_dir / 'model')
+        print(f'[AST] Loading feature extractor from {model_dir}...', flush=True)
         self.extractor = ASTFeatureExtractor.from_pretrained(str(model_dir))
         self.get_logger().info(
             f'engine input {self.engine.input_shape} '
@@ -157,6 +169,8 @@ class AstClassifierNode(Node):
         self.get_logger().info(
             f'{self.n_ch} channels, threshold {args.threshold}, '
             f'{args.consecutive} consecutive windows')
+        print('[AST] READY - confidence will print for every classified window.',
+              flush=True)
 
     def _status(self):
         """Name the reason nothing is being classified, rather than sit mute."""
@@ -286,7 +300,7 @@ class AstClassifierNode(Node):
                 conf = self.latest_conf[i] * 100.0
                 tag = " [DRONE]" if self.latest_verdict[i] else ""
                 parts.append(f"[CH {i} (ID {tid})] {conf:5.1f}%{tag}")
-        self.get_logger().info(" | ".join(parts))
+        self.get_logger().info("AST confidence | " + " | ".join(parts))
 
 
 
@@ -320,17 +334,26 @@ def parse_args(argv):
 
 
 def main():
-    argv = rclpy.utilities.remove_ros_args(sys.argv)[1:]
-    args = parse_args(argv)
-
-    rclpy.init()
-    node = AstClassifierNode(args)
+    node = None
     try:
+        argv = rclpy.utilities.remove_ros_args(sys.argv)[1:]
+        args = parse_args(argv)
+        print(
+            f'[AST] Starting: engine={args.engine} threshold={args.threshold} '
+            f'min_activity={args.min_activity} always_classify={args.always_classify}',
+            flush=True)
+        rclpy.init()
+        node = AstClassifierNode(args)
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    except BaseException:
+        print('[AST] FATAL STARTUP/RUNTIME ERROR:', file=sys.stderr, flush=True)
+        traceback.print_exc()
+        raise
     finally:
-        node.destroy_node()
+        if node is not None:
+            node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
 

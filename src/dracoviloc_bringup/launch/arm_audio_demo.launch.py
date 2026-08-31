@@ -2,35 +2,109 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+
+def _enabled(context, name):
+    return LaunchConfiguration(name).perform(context).lower() in ("1", "true", "yes", "on")
+
+
+def _configure_pipeline(context, fusion_share):
+    mode = LaunchConfiguration("tracking_mode").perform(context)
+    audio_enabled = _enabled(context, "audio_enabled")
+    visual_enabled = _enabled(context, "visual_enabled")
+    fusion_enabled = _enabled(context, "fusion_enabled")
+    ast_enabled = _enabled(context, "ast_enabled")
+    gre_enabled = _enabled(context, "gre_enabled")
+
+    if mode.startswith("direct_"):
+        source = mode.removeprefix("direct_")
+        if source != "yolo":
+            if not audio_enabled:
+                raise RuntimeError(f"tracking_mode={mode} requires audio_enabled:=true")
+            if not fusion_enabled:
+                raise RuntimeError(f"tracking_mode={mode} requires fusion_enabled:=true")
+            if source == "ast" and not ast_enabled:
+                raise RuntimeError(f"tracking_mode={mode} requires ast_enabled:=true")
+            if source == "gre" and not gre_enabled:
+                raise RuntimeError(f"tracking_mode={mode} requires gre_enabled:=true")
+            if source == "either" and not (ast_enabled or gre_enabled):
+                raise RuntimeError(f"tracking_mode={mode} requires AST or GRE to be enabled")
+    elif mode == "ekf":
+        source = "gre"
+        if not fusion_enabled:
+            raise RuntimeError("tracking_mode=ekf requires fusion_enabled:=true")
+        if not (audio_enabled or visual_enabled):
+            raise RuntimeError("tracking_mode=ekf requires audio_enabled or visual_enabled")
+    else:
+        source = "gre"
+
+    actions = []
+    if audio_enabled or mode == "direct_yolo":
+        actions.append(Node(
+            package="tf2_ros",
+            executable="static_transform_publisher",
+            name="table_microphone_broadcaster",
+            arguments=[
+                "--x", LaunchConfiguration("table_mic_x"),
+                "--y", LaunchConfiguration("table_mic_y"),
+                "--z", LaunchConfiguration("table_mic_z"),
+                "--yaw", LaunchConfiguration("table_mic_yaw"),
+                "--pitch", LaunchConfiguration("table_mic_pitch"),
+                "--roll", LaunchConfiguration("table_mic_roll"),
+                "--frame-id", "world",
+                "--child-frame-id", "table_mic_link",
+            ],
+            parameters=[{"use_sim_time": True}]))
+
+    if fusion_enabled and (audio_enabled or visual_enabled):
+        actions.append(IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(
+                fusion_share, "launch", "classification_fusion.launch.py")),
+            launch_arguments={
+                "tracking_frame": "table_mic_link",
+                "min_confidence": LaunchConfiguration("min_confidence"),
+                "gre_trust": LaunchConfiguration("gre_trust"),
+                "threshold": LaunchConfiguration("ast_threshold"),
+                "min_activity": LaunchConfiguration("min_activity"),
+                "ast_enabled": LaunchConfiguration("ast_enabled"),
+                "gre_enabled": LaunchConfiguration("gre_enabled"),
+                "always_classify": LaunchConfiguration("always_classify"),
+                "audio_enabled": LaunchConfiguration("audio_enabled"),
+                "visual_enabled": LaunchConfiguration("visual_enabled"),
+                "ekf_enabled": "true" if mode == "ekf" else "false",
+            }.items()))
+
+    if mode != "off":
+        actions.append(Node(
+            package="dracoviloc_tracking",
+            executable="arm_audio_tracker",
+            parameters=[{
+                "use_sim_time": True,
+                "smoothing_alpha": ParameterValue(
+                    LaunchConfiguration("smoothing_alpha"), value_type=float),
+                "max_velocity": ParameterValue(
+                    LaunchConfiguration("max_velocity"), value_type=float),
+                "max_acceleration": ParameterValue(
+                    LaunchConfiguration("max_acceleration"), value_type=float),
+                "ekf_enabled": mode == "ekf",
+                "direct_classifier_source": source,
+                "direct_min_activity": ParameterValue(
+                    LaunchConfiguration("min_activity"), value_type=float),
+            }],
+            output="screen"))
+    return actions
 
 
 def generate_launch_description():
     use_rviz = LaunchConfiguration("use_rviz")
     use_gui = LaunchConfiguration("use_gui")
     audio_enabled = LaunchConfiguration("audio_enabled")
-    audio_tracking_enabled = LaunchConfiguration("audio_tracking_enabled")
-    fusion_enabled = LaunchConfiguration("fusion_enabled")
-    table_mic_x = LaunchConfiguration("table_mic_x")
-    table_mic_y = LaunchConfiguration("table_mic_y")
-    table_mic_z = LaunchConfiguration("table_mic_z")
-    table_mic_yaw = LaunchConfiguration("table_mic_yaw")
-    table_mic_pitch = LaunchConfiguration("table_mic_pitch")
-    table_mic_roll = LaunchConfiguration("table_mic_roll")
-    min_confidence = LaunchConfiguration("min_confidence")
-    gre_trust = LaunchConfiguration("gre_trust")
-    ast_enabled = LaunchConfiguration("ast_enabled")
-    gre_enabled = LaunchConfiguration("gre_enabled")
-    visual_enabled = LaunchConfiguration("visual_enabled")
-    always_classify = LaunchConfiguration("always_classify")
-    smoothing_alpha = LaunchConfiguration("smoothing_alpha")
-    max_velocity = LaunchConfiguration("max_velocity")
-    max_acceleration = LaunchConfiguration("max_acceleration")
     bringup_share = get_package_share_directory("dracoviloc_bringup")
     audio_share = get_package_share_directory("dracoviloc_odas")
     fusion_share = get_package_share_directory("dracoviloc_audio_fusion")
@@ -42,7 +116,7 @@ def generate_launch_description():
             "sim": "true",
             "use_gui": use_gui,
             "use_rviz": use_rviz,
-            "use_moveit": "false",
+            "use_moveit": "true",
         }.items())
 
     audio = IncludeLaunchDescription(
@@ -54,58 +128,6 @@ def generate_launch_description():
         }.items(),
         condition=IfCondition(audio_enabled))
 
-    table_microphone_tf = Node(
-        package="tf2_ros",
-        executable="static_transform_publisher",
-        name="table_microphone_broadcaster",
-        arguments=[
-            "--x", table_mic_x, "--y", table_mic_y, "--z", table_mic_z,
-            "--yaw", table_mic_yaw, "--pitch", table_mic_pitch,
-            "--roll", table_mic_roll,
-            "--frame-id", "world", "--child-frame-id", "table_mic_link",
-        ],
-        parameters=[{"use_sim_time": True}],
-        condition=IfCondition(audio_enabled))
-
-    audio_tracker = Node(
-        package="dracoviloc_tracking",
-        executable="arm_audio_tracker",
-        parameters=[{
-            "use_sim_time": True,
-            "smoothing_alpha": ParameterValue(smoothing_alpha, value_type=float),
-            "max_velocity": ParameterValue(max_velocity, value_type=float),
-            "max_acceleration": ParameterValue(max_acceleration, value_type=float),
-        }],
-        output="screen",
-        condition=IfCondition(PythonExpression([
-            "'", audio_enabled, "' == 'true' and '",
-            audio_tracking_enabled, "' == 'true'",
-        ])))
-
-    fusion = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(fusion_share, "launch", "classification_fusion.launch.py")),
-        launch_arguments={
-            "tracking_frame": "table_mic_link",
-            "min_confidence": min_confidence,
-            "gre_trust": gre_trust,
-            "ast_enabled": ast_enabled,
-            "gre_enabled": gre_enabled,
-            "always_classify": always_classify,
-            "audio_enabled": audio_enabled,
-            "visual_enabled": visual_enabled,
-        }.items(),
-        # NOT gated on audio_enabled: the EKF and visual (YOLO) fusion must
-        # stay independent of the acoustic side - see AUDIO AND VISUAL ARE
-        # INDEPENDENT in ekf_fusion_node.py. Launch fusion whenever either
-        # modality might feed it; audio_enabled/visual_enabled forwarded
-        # above then tell the EKF itself which measurements to actually use.
-        condition=IfCondition(PythonExpression([
-            "'", fusion_enabled, "' == 'true' and (",
-            "'", audio_enabled, "' == 'true' or '",
-            visual_enabled, "' == 'true')",
-        ])))
-
     return LaunchDescription([
         DeclareLaunchArgument("use_rviz", default_value="true"),
         DeclareLaunchArgument("use_gui", default_value="true"),
@@ -113,12 +135,13 @@ def generate_launch_description():
             "audio_enabled", default_value="false",
             description="Launch fixed-table UMA16v2/ODAS localization."),
         DeclareLaunchArgument(
-            "audio_tracking_enabled", default_value="true",
-            description="Point the simulated wrist along a stable audio direction."),
+            "tracking_mode", default_value="off",
+            choices=["off", "direct_gre", "direct_ast", "direct_either",
+                     "direct_yolo", "ekf"],
+            description="Arm target source and filtering mode."),
         DeclareLaunchArgument(
             "fusion_enabled", default_value="true",
-            description="Launch classification and EKF fusion "
-                        "(dracoviloc_audio_fusion) to produce /fused_target_pose."),
+            description="Launch audio classification and, when enabled, EKF fusion."),
         DeclareLaunchArgument(
             "ast_enabled", default_value="true",
             description="Forwarded to classification_fusion.launch.py."),
@@ -129,15 +152,19 @@ def generate_launch_description():
                         "can run."),
         DeclareLaunchArgument(
             "visual_enabled", default_value="false",
-            description="Forwarded to classification_fusion.launch.py. Runs "
-                        "the YOLO->EKF placeholder bridge (yolo_ekf_adapter) "
-                        "and enables the EKF's visual measurement path. "
-                        "Independent of audio_enabled - fusion now launches "
-                        "whenever either is true, so a UMA-16/ODAS failure "
-                        "does not take down visual tracking, and vice versa."),
+            description="Consume externally published YOLO directions in "
+                        "the EKF when fusion_enabled is true. Isaac ROS is "
+                        "launched separately inside its container."),
         DeclareLaunchArgument(
             "min_confidence", default_value="0.20",
             description="Forwarded to classification_fusion.launch.py."),
+        DeclareLaunchArgument(
+            "ast_threshold", default_value="0.20",
+            description="AST drone-probability threshold."),
+        DeclareLaunchArgument(
+            "min_activity", default_value="0.10",
+            description="Shared ODAS activity threshold for classification "
+                        "and direct arm tracking."),
         DeclareLaunchArgument(
             "gre_trust", default_value="0.0",
             description="Forwarded to classification_fusion.launch.py. Only "
@@ -159,8 +186,8 @@ def generate_launch_description():
         DeclareLaunchArgument("table_mic_pitch", default_value="0.0"),
         DeclareLaunchArgument("table_mic_roll", default_value="1.57079632679"),
         arm_demo,
-        table_microphone_tf,
         audio,
-        fusion,
-        audio_tracker,
+        OpaqueFunction(
+            function=_configure_pipeline,
+            kwargs={"fusion_share": fusion_share}),
     ])

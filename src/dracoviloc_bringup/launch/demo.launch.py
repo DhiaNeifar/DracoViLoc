@@ -105,6 +105,7 @@ def generate_launch_description():
                    "--controller-manager-timeout", "120"],
         parameters=[{"use_sim_time": True}],
         output="screen",
+        condition=UnlessCondition(sim),
     )
     arm_spawner = Node(
         package="controller_manager",
@@ -113,6 +114,7 @@ def generate_launch_description():
                    "--controller-manager-timeout", "120"],
         parameters=[{"use_sim_time": True}],
         output="screen",
+        condition=UnlessCondition(sim),
     )
     move_group = Node(
         package="moveit_ros_move_group",
