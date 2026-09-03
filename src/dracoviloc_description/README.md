@@ -6,7 +6,7 @@ the single FAIRINO arm and its attached sensor frames.
 This package is normally consumed through `dracoviloc_bringup`:
 
 ```bash
-ros2 launch dracoviloc_bringup demo.launch.py robot_ip:=192.168.58.2
+ros2 launch dracoviloc_bringup demo.launch.py hardware_mode:=mock
 ```
 
 Edit fixed sensor mounting transforms in `urdf/dracoviloc.urdf.xacro`. Rebuild

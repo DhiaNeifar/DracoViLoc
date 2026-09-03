@@ -14,14 +14,17 @@ def generate_launch_description():
     use_rviz = LaunchConfiguration("use_rviz")
     use_moveit = LaunchConfiguration("use_moveit")
     robot_ip = LaunchConfiguration("robot_ip")
+    hardware_mode = LaunchConfiguration("hardware_mode")
     description_share = get_package_share_directory("dracoviloc_description")
     bringup_share = get_package_share_directory("dracoviloc_bringup")
     moveit_share = get_package_share_directory("dracoviloc_moveit_config")
     xacro_file = os.path.join(description_share, "urdf", "dracoviloc.urdf.xacro")
     controllers_file = os.path.join(bringup_share, "config", "ros2_controllers.yaml")
-    mappings = {"robot_ip": robot_ip, "ros2_controllers_file": controllers_file}
+    mappings = {"hardware_mode": hardware_mode, "robot_ip": robot_ip,
+                "ros2_controllers_file": controllers_file}
     robot_description = {"robot_description": ParameterValue(
         Command([FindExecutable(name="xacro"), " ", xacro_file,
+                 " hardware_mode:=", hardware_mode,
                  " robot_ip:=", robot_ip,
                  " ros2_controllers_file:=", controllers_file]), value_type=str)}
     moveit_config = (MoveItConfigsBuilder("dracoviloc", package_name="dracoviloc_moveit_config")
@@ -35,6 +38,9 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("use_rviz", default_value="true"),
         DeclareLaunchArgument("use_moveit", default_value="true"),
+        DeclareLaunchArgument("hardware_mode", default_value="mock",
+                              choices=["mock", "real"],
+                              description="ROS 2 Control backend."),
         DeclareLaunchArgument("robot_ip", default_value="192.168.58.2"),
         Node(package="robot_state_publisher", executable="robot_state_publisher",
              parameters=[robot_description, common], output="screen"),

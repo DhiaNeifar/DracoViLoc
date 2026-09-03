@@ -1,12 +1,14 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="dracoviloc">
   <xacro:arg name="robot_ip" default="192.168.58.2"/>
+  <xacro:arg name="hardware_mode" default="mock"/>
   <xacro:arg name="initial_positions_file"
     default="$(find dracoviloc_description)/config/initial_positions.yaml"/>
   <xacro:arg name="ros2_controllers_file"
     default="$(find dracoviloc_bringup)/config/ros2_controllers.yaml"/>
   <xacro:property name="initial_positions"
     value="${xacro.load_yaml('$(arg initial_positions_file)')['initial_positions']}"/>
+  <xacro:property name="hardware_mode" value="$(arg hardware_mode)"/>
 
   <xacro:include filename="$(find dracoviloc_description)/urdf/fairino3_v6_macro.xacro"/>
 
@@ -69,8 +71,13 @@
 
   <ros2_control name="fairino_arm_system" type="system">
     <hardware>
-      <plugin>fairino_hardware/FairinoHardwareInterface</plugin>
-      <param name="robot_ip">$(arg robot_ip)</param>
+      <xacro:if value="${hardware_mode == 'mock'}">
+        <plugin>mock_components/GenericSystem</plugin>
+      </xacro:if>
+      <xacro:if value="${hardware_mode == 'real'}">
+        <plugin>fairino_hardware/FairinoHardwareInterface</plugin>
+        <param name="robot_ip">$(arg robot_ip)</param>
+      </xacro:if>
     </hardware>
     <xacro:macro name="controlled_joint" params="name">
       <joint name="${name}">

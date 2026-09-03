@@ -103,6 +103,8 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share):
 
 def generate_launch_description():
     use_rviz = LaunchConfiguration("use_rviz")
+    hardware_mode = LaunchConfiguration("hardware_mode")
+    robot_ip = LaunchConfiguration("robot_ip")
     audio_enabled = LaunchConfiguration("audio_enabled")
     bringup_share = get_package_share_directory("dracoviloc_bringup")
     audio_share = get_package_share_directory("dracoviloc_odas")
@@ -114,6 +116,8 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(bringup_share, "launch", "demo.launch.py")),
         launch_arguments={
+            "hardware_mode": hardware_mode,
+            "robot_ip": robot_ip,
             "use_rviz": use_rviz,
             "use_moveit": "true",
         }.items())
@@ -129,6 +133,10 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument("use_rviz", default_value="true"),
+        DeclareLaunchArgument("hardware_mode", default_value="mock",
+                              choices=["mock", "real"],
+                              description="Use mock joints or the physical FAIRINO arm."),
+        DeclareLaunchArgument("robot_ip", default_value="192.168.58.2"),
         DeclareLaunchArgument(
             "audio_enabled", default_value="false",
             description="Launch fixed-table UMA16v2/ODAS localization."),
