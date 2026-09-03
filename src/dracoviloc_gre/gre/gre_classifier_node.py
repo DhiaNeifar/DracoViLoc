@@ -6,11 +6,10 @@ Marouane's causal GRU detector (rt_drone_detector), one instance per separated
 source, publishing per-track verdicts for the EKF.
 
     /sss (4ch audio) ─┐
-                      ├─► GRE ─► /gre_classifier/detection
+                      ├─► GRE ─► /gre/direction
     /sst (track ids) ─┘          [track_id, is_drone, confidence]
 
-Note the topic: /gre_classifier/detection, NOT /audio_classifier/detection.
-AST owns that one. Two publishers on a single topic would make the verdicts
+AST and GRE publish on separate direction topics. Two publishers on a single topic would make the verdicts
 indistinguishable to the EKF, which caches one classification per track id.
 
 ONE DETECTOR PER CHANNEL - THIS IS THE WHOLE DESIGN
@@ -192,7 +191,7 @@ class GreClassifierNode(Node):
                          history=HistoryPolicy.KEEP_LAST, depth=10)
 
         self.pub = self.create_publisher(
-            Vector3Stamped, '/gre_classifier/detection', qos)
+            Vector3Stamped, '/gre/direction', qos)
         self.create_subscription(AudioFrame, '/sss', self._sss_cb, qos)
         self.create_subscription(
             OdasSstArrayStamped, '/sst', self._sst_cb, qos)
@@ -315,13 +314,15 @@ class GreClassifierNode(Node):
         score = float(result.get('score', 0.0))
         decision = bool(result.get('decision', False))
 
-        out = Vector3Stamped()
-        out.header.stamp = stamp          # capture time - the EKF needs it
-        out.header.frame_id = 'odas'
-        out.vector.x = float(track_id)
-        out.vector.y = 1.0 if decision else 0.0
-        out.vector.z = score
-        self.pub.publish(out)
+        if decision and self.latest_sst is not None and ch < len(self.latest_sst.sources):
+            source = self.latest_sst.sources[ch]
+            out = Vector3Stamped()
+            out.header = self.latest_sst.header
+            out.header.stamp = stamp
+            out.vector.x = float(source.x)
+            out.vector.y = float(source.y)
+            out.vector.z = float(source.z)
+            self.pub.publish(out)
 
         self.get_logger().info(
             f'GRE confidence={score:.3f} decision='

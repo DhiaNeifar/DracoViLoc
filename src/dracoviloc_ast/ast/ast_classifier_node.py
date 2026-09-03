@@ -7,7 +7,7 @@ runs the AST TensorRT engine per separated channel, and publishes a per-track
 verdict for the fusion stage.
 
     /sss (4ch audio) ─┐
-                      ├─► AST ─► /audio_classifier/detection
+                      ├─► AST ─► /ast/direction
     /sst (track ids) ─┘          [track_id, is_drone, confidence]
 
 BAND WARNING
@@ -160,7 +160,7 @@ class AstClassifierNode(Node):
                          history=HistoryPolicy.KEEP_LAST, depth=10)
 
         self.pub = self.create_publisher(
-            Vector3Stamped, '/audio_classifier/detection', qos)
+            Vector3Stamped, '/ast/direction', qos)
         self.create_subscription(AudioFrame, '/sss', self._sss_cb, qos)
         self.create_subscription(
             OdasSstArrayStamped, '/sst', self._sst_cb, qos)
@@ -282,13 +282,15 @@ class AstClassifierNode(Node):
         self.latest_conf[ch] = prob_drone
         self.latest_verdict[ch] = is_drone
 
-        out = Vector3Stamped()
-        out.header.stamp = stamp
-        out.header.frame_id = 'odas'
-        out.vector.x = float(track_id)              # track id
-        out.vector.y = 1.0 if is_drone else 0.0     # verdict
-        out.vector.z = float(prob_drone)            # confidence
-        self.pub.publish(out)
+        if is_drone and self.latest_sst is not None and ch < len(self.latest_sst.sources):
+            source = self.latest_sst.sources[ch]
+            out = Vector3Stamped()
+            out.header = self.latest_sst.header
+            out.header.stamp = stamp
+            out.vector.x = float(source.x)
+            out.vector.y = float(source.y)
+            out.vector.z = float(source.z)
+            self.pub.publish(out)
 
         # Multi-channel status display across all channels
         parts = []

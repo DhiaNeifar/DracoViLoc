@@ -2,7 +2,7 @@
 
 Runs the complete DracoViLoc YOLO test or camera pipeline and projects each
 detection-box center into a normalized camera ray. It publishes a
-`geometry_msgs/PoseArray` on `/yolo/directions`.
+`geometry_msgs/Vector3Stamped` on `/yolo/direction`.
 
 After deployment, container build and TensorRT engine generation:
 

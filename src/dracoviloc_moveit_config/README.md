@@ -5,7 +5,7 @@ controller mapping and RViz configuration for planning group `arm`.
 
 ```bash
 ros2 launch dracoviloc_bringup demo.launch.py \
-  sim:=true use_moveit:=true use_rviz:=true
+  robot_ip:=192.168.58.2 use_moveit:=true use_rviz:=true
 ```
 
 The continuous audio tracker does not use MoveIt; it commands only joints 1 and

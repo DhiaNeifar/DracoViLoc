@@ -93,7 +93,7 @@ source ~/DracoViLoc/install/setup.bash
 
 ros2 launch dracoviloc_bringup arm_audio_demo.launch.py \
   audio_enabled:=true audio_tracking_enabled:=true fusion_enabled:=true \
-  table_mic_roll:=0.0 use_rviz:=true use_gui:=false \
+  table_mic_roll:=0.0 use_rviz:=true \
   smoothing_alpha:=0.60 max_velocity:=1.5 max_acceleration:=2.5 \
   min_confidence:=0.20 gre_trust:=0.0
 ```

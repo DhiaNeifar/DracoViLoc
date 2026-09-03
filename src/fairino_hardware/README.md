@@ -1,8 +1,7 @@
-# FAIRINO arm hardware and simulation
+# FAIRINO arm hardware
 
 The FAIRINO integration provides the `ros2_control` hardware plugin used by the
-DracoViLoc robot description. The same bringup supports Gazebo simulation and a
-physical arm selected with the `sim` argument.
+DracoViLoc robot description.
 
 ## Prepare the SDK on a new machine
 
@@ -16,13 +15,6 @@ cd ~/DracoViLoc
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install
 source install/setup.bash
-```
-
-## Simulation
-
-```bash
-ros2 launch dracoviloc_bringup demo.launch.py \
-  sim:=true use_rviz:=true use_moveit:=true
 ```
 
 For the current audio-pointing demonstration, MoveIt is deliberately disabled
@@ -42,14 +34,13 @@ reachable, and pass its IP address:
 ping 192.168.58.2
 
 ros2 launch dracoviloc_bringup demo.launch.py \
-  sim:=false robot_ip:=192.168.58.2 \
+  robot_ip:=192.168.58.2 \
   use_rviz:=true use_moveit:=true
 ```
 
 Start with low speed limits and a clear workspace. Confirm joint-state feedback
-before sending motion. The physical-arm mode loads
-`fairino_hardware/FairinoHardwareInterface`; simulation loads
-`gz_ros2_control/GazeboSimSystem`.
+before sending motion. Bringup loads
+`fairino_hardware/FairinoHardwareInterface`.
 
 ## Useful checks
 

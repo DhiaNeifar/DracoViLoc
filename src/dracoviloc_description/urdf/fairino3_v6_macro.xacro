@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
-  <xacro:macro name="fairino3_v6_robot_prefixed" params="prefix sim:=false">
+  <xacro:macro name="fairino3_v6_robot_prefixed" params="prefix">
   <link
     name="${prefix}base_link">
     <inertial>
@@ -41,12 +41,6 @@
       </geometry>
     </collision>
   </link>
-  <xacro:if value="${sim}">
-    <gazebo reference="${prefix}base_link">
-      <static>true</static>
-      <self_collide>true</self_collide>
-    </gazebo>
-  </xacro:if>
   <link
     name="${prefix}shoulder_link">
     <inertial>
@@ -87,11 +81,6 @@
       </geometry>
     </collision>
   </link>
-  <xacro:if value="${sim}">
-    <gazebo reference="${prefix}shoulder_link">
-      <self_collide>true</self_collide>
-    </gazebo>
-  </xacro:if>
   <joint
     name="${prefix}joint1"
     type="revolute">
@@ -104,53 +93,23 @@
       link="${prefix}shoulder_link" />
     <axis
       xyz="0 0 1" />
-    <xacro:unless value="${sim}">
-      <limit
+    <limit
         lower="-3.0543"
         upper="3.0543"
         effort="150"
         velocity="3.15" />
-    </xacro:unless>
-    <xacro:if value="${sim}">
-      <limit
-        lower="-3.0543"
-        upper="3.0543"
-        effort="150"
-        velocity="3.15" />
-    </xacro:if>
     <calibration
       rising="0"
       falling="0" />
     <dynamics
       damping="0"
       friction="0" />
-    <xacro:unless value="${sim}">
-      <safety_controller
+    <safety_controller
         soft_lower_limit="-3.0543"
         soft_upper_limit="3.0543"
         k_position="15"
         k_velocity="10" />
-    </xacro:unless>
-    <xacro:if value="${sim}">
-      <safety_controller
-        soft_lower_limit="-3.0543"
-        soft_upper_limit="3.0543"
-        k_position="15"
-        k_velocity="10" />
-    </xacro:if>
   </joint>
-  <xacro:if value="${sim}">
-    <transmission name="${prefix}joint1_trans">
-      <type>transmission_interface/SimpleTransmission</type>
-      <joint name="${prefix}joint1">
-        <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
-      </joint>
-      <actuator name="${prefix}joint1_motor">
-        <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
-        <mechanicalReduction>1</mechanicalReduction>
-      </actuator>
-    </transmission>
-  </xacro:if>
   <link
     name="${prefix}upperarm_link">
     <inertial>
@@ -191,11 +150,6 @@
       </geometry>
     </collision>
   </link>
-  <xacro:if value="${sim}">
-    <gazebo reference="${prefix}upperarm_link">
-      <self_collide>true</self_collide>
-    </gazebo>
-  </xacro:if>
   <joint
     name="${prefix}joint2"
     type="revolute">
@@ -208,53 +162,23 @@
       link="${prefix}upperarm_link" />
     <axis
       xyz="0 0 1" />
-    <xacro:unless value="${sim}">
-      <limit
+    <limit
         lower="-4.6251"
         upper="1.4835"
         effort="150"
         velocity="3.15" />
-    </xacro:unless>
-    <xacro:if value="${sim}">
-      <limit
-        lower="-4.6251"
-        upper="1.4835"
-        effort="150"
-        velocity="3.15" />
-    </xacro:if>
     <calibration
       rising="0"
       falling="0" />
     <dynamics
       damping="0"
       friction="0" />
-    <xacro:unless value="${sim}">
-      <safety_controller
+    <safety_controller
         soft_lower_limit="-4.6251"
         soft_upper_limit="1.4835"
         k_position="15"
         k_velocity="10" />
-    </xacro:unless>
-    <xacro:if value="${sim}">
-      <safety_controller
-        soft_lower_limit="-4.6251"
-        soft_upper_limit="1.4835"
-        k_position="15"
-        k_velocity="10" />
-    </xacro:if>
   </joint>
-  <xacro:if value="${sim}">
-    <transmission name="${prefix}joint2_trans">
-      <type>transmission_interface/SimpleTransmission</type>
-      <joint name="${prefix}joint2">
-        <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
-      </joint>
-      <actuator name="${prefix}joint2_motor">
-        <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
-        <mechanicalReduction>1</mechanicalReduction>
-      </actuator>
-    </transmission>
-  </xacro:if>
   <link
     name="${prefix}forearm_link">
     <inertial>
@@ -295,11 +219,6 @@
       </geometry>
     </collision>
   </link>
-  <xacro:if value="${sim}">
-    <gazebo reference="${prefix}forearm_link">
-      <self_collide>true</self_collide>
-    </gazebo>
-  </xacro:if>
   <joint
     name="${prefix}joint3"
     type="revolute">
@@ -312,53 +231,23 @@
       link="${prefix}forearm_link" />
     <axis
       xyz="0 0 1" />
-    <xacro:unless value="${sim}">
-      <limit
+    <limit
         lower="-2.8274"
         upper="2.8274"
         effort="150"
         velocity="3.15" />
-    </xacro:unless>
-    <xacro:if value="${sim}">
-      <limit
-        lower="-2.8274"
-        upper="2.8274"
-        effort="150"
-        velocity="3.15" />
-    </xacro:if>
     <calibration
       rising="0"
       falling="0" />
     <dynamics
       damping="0"
       friction="0" />
-    <xacro:unless value="${sim}">
-      <safety_controller
+    <safety_controller
         soft_lower_limit="-2.8274"
         soft_upper_limit="2.8274"
         k_position="15"
         k_velocity="10" />
-    </xacro:unless>
-    <xacro:if value="${sim}">
-      <safety_controller
-        soft_lower_limit="-2.8274"
-        soft_upper_limit="2.8274"
-        k_position="15"
-        k_velocity="10" />
-    </xacro:if>
   </joint>
-  <xacro:if value="${sim}">
-    <transmission name="${prefix}joint3_trans">
-      <type>transmission_interface/SimpleTransmission</type>
-      <joint name="${prefix}joint3">
-        <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
-      </joint>
-      <actuator name="${prefix}joint3_motor">
-        <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
-        <mechanicalReduction>1</mechanicalReduction>
-      </actuator>
-    </transmission>
-  </xacro:if>
   <link
     name="${prefix}wrist1_link">
     <inertial>
@@ -399,11 +288,6 @@
       </geometry>
     </collision>
   </link>
-  <xacro:if value="${sim}">
-    <gazebo reference="${prefix}wrist1_link">
-      <self_collide>true</self_collide>
-    </gazebo>
-  </xacro:if>
   <joint
     name="${prefix}joint4"
     type="revolute">
@@ -416,53 +300,23 @@
       link="${prefix}wrist1_link" />
     <axis
       xyz="0 0 1" />
-    <xacro:unless value="${sim}">
-      <limit
+    <limit
         lower="-6.28319"
         upper="6.28319"
         effort="28"
         velocity="3.2" />
-    </xacro:unless>
-    <xacro:if value="${sim}">
-      <limit
-        lower="-6.28319"
-        upper="6.28319"
-        effort="28"
-        velocity="3.2" />
-    </xacro:if>
     <calibration
       rising="0"
       falling="0" />
     <dynamics
       damping="0"
       friction="0" />
-    <xacro:unless value="${sim}">
-      <safety_controller
+    <safety_controller
         soft_lower_limit="-6.28319"
         soft_upper_limit="6.28319"
         k_position="15"
         k_velocity="10" />
-    </xacro:unless>
-    <xacro:if value="${sim}">
-      <safety_controller
-        soft_lower_limit="-6.28319"
-        soft_upper_limit="6.28319"
-        k_position="15"
-        k_velocity="10" />
-    </xacro:if>
   </joint>
-  <xacro:if value="${sim}">
-    <transmission name="${prefix}joint4_trans">
-      <type>transmission_interface/SimpleTransmission</type>
-      <joint name="${prefix}joint4">
-        <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
-      </joint>
-      <actuator name="${prefix}joint4_motor">
-        <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
-        <mechanicalReduction>1</mechanicalReduction>
-      </actuator>
-    </transmission>
-  </xacro:if>
   <link
     name="${prefix}wrist2_link">
     <inertial>
@@ -503,11 +357,6 @@
       </geometry>
     </collision>
   </link>
-  <xacro:if value="${sim}">
-    <gazebo reference="${prefix}wrist2_link">
-      <self_collide>true</self_collide>
-    </gazebo>
-  </xacro:if>
   <joint
     name="${prefix}joint5"
     type="revolute">
@@ -520,53 +369,23 @@
       link="${prefix}wrist2_link" />
     <axis
       xyz="0 0 1" />
-    <xacro:unless value="${sim}">
-      <limit
+    <limit
         lower="-6.28319"
         upper="6.28319"
         effort="28"
         velocity="3.2" />
-    </xacro:unless>
-    <xacro:if value="${sim}">
-      <limit
-        lower="-6.28319"
-        upper="6.28319"
-        effort="28"
-        velocity="3.2" />
-    </xacro:if>
     <calibration
       rising="0"
       falling="0" />
     <dynamics
       damping="0"
       friction="0" />
-    <xacro:unless value="${sim}">
-      <safety_controller
+    <safety_controller
         soft_lower_limit="-6.28319"
         soft_upper_limit="6.28319"
         k_position="15"
         k_velocity="10" />
-    </xacro:unless>
-    <xacro:if value="${sim}">
-      <safety_controller
-        soft_lower_limit="-6.28319"
-        soft_upper_limit="6.28319"
-        k_position="15"
-        k_velocity="10" />
-    </xacro:if>
   </joint>
-  <xacro:if value="${sim}">
-    <transmission name="${prefix}joint5_trans">
-      <type>transmission_interface/SimpleTransmission</type>
-      <joint name="${prefix}joint5">
-        <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
-      </joint>
-      <actuator name="${prefix}joint5_motor">
-        <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
-        <mechanicalReduction>1</mechanicalReduction>
-      </actuator>
-    </transmission>
-  </xacro:if>
   <link
     name="${prefix}wrist3_link">
     <inertial>
@@ -607,11 +426,6 @@
       </geometry>
     </collision>
   </link>
-  <xacro:if value="${sim}">
-    <gazebo reference="${prefix}wrist3_link">
-      <self_collide>true</self_collide>
-    </gazebo>
-  </xacro:if>
   <joint
     name="${prefix}joint6"
     type="revolute">
@@ -624,52 +438,22 @@
       link="${prefix}wrist3_link" />
     <axis
       xyz="0 0 1" />
-    <xacro:unless value="${sim}">
-      <limit
+    <limit
         lower="-6.28319"
         upper="6.28319"
         effort="28"
         velocity="3.2" />
-    </xacro:unless>
-    <xacro:if value="${sim}">
-      <limit
-        lower="-6.28319"
-        upper="6.28319"
-        effort="28"
-        velocity="3.2" />
-    </xacro:if>
     <calibration
       rising="0"
       falling="0" />
     <dynamics
       damping="0"
       friction="0" />
-    <xacro:unless value="${sim}">
-      <safety_controller
+    <safety_controller
         soft_lower_limit="-6.28319"
         soft_upper_limit="6.28319"
         k_position="15"
         k_velocity="10" />
-    </xacro:unless>
-    <xacro:if value="${sim}">
-      <safety_controller
-        soft_lower_limit="-6.28319"
-        soft_upper_limit="6.28319"
-        k_position="15"
-        k_velocity="10" />
-    </xacro:if>
   </joint>
-  <xacro:if value="${sim}">
-    <transmission name="${prefix}joint6_trans">
-      <type>transmission_interface/SimpleTransmission</type>
-      <joint name="${prefix}joint6">
-        <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
-      </joint>
-      <actuator name="${prefix}joint6_motor">
-        <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
-        <mechanicalReduction>1</mechanicalReduction>
-      </actuator>
-    </transmission>
-  </xacro:if>
   </xacro:macro>
 </robot>

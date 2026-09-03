@@ -27,8 +27,8 @@ def generate_launch_description():
     )
     return LaunchDescription([
         DeclareLaunchArgument(
-            "use_sim_time", default_value="true",
-            description="Use DracoViLoc/Gazebo clock for stamped ODAS outputs."),
+            "use_sim_time", default_value="false",
+            description="Use simulated time instead of the system clock."),
         DeclareLaunchArgument(
             "microphone_frame", default_value="odas_link",
             description="TF frame in which ODAS microphone directions are expressed."),

@@ -11,8 +11,8 @@ ros2 launch dracoviloc_bringup arm_audio_demo.launch.py \
   audio_enabled:=true audio_tracking_enabled:=true
 ```
 
-Inputs are `/fused_target_pose` (azimuth, elevation, from
-`dracoviloc_audio_fusion`'s EKF, started automatically by the launch above
+Inputs are `/ekf_fused_target_pose` (`Vector3Stamped` direction from
+`dracoviloc_ekf`, started automatically by the launch above
 via `fusion_enabled:=true`), the legacy `/audio/target_valid` (an optional
 external veto), and `/joint_states`; commands are published to
 `/arm_controller/joint_trajectory`.

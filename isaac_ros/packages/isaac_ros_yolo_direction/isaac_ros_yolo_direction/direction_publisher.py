@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Publish YOLO bounding-box centers as rays in the camera/UMA-16 frame."""
 
-from geometry_msgs.msg import Pose, PoseArray
+from geometry_msgs.msg import Vector3Stamped
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
@@ -23,14 +23,14 @@ class DirectionPublisher(Node):
         camera_info_topic = self.declare_parameter(
             'camera_info_topic', '/yolov8_encoder/resize/camera_info').value
         output_topic = self.declare_parameter(
-            'output_topic', '/yolo/directions').value
+            'output_topic', '/yolo/direction').value
 
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self._camera_info = None
         self.create_subscription(CameraInfo, camera_info_topic, self._camera_info_callback, qos)
         self.create_subscription(
             Detection2DArray, detections_topic, self._detections_callback, qos)
-        self._publisher = self.create_publisher(PoseArray, output_topic, qos)
+        self._publisher = self.create_publisher(Vector3Stamped, output_topic, qos)
 
         self.get_logger().info(
             f'Publishing bounding-box center rays on {output_topic}; '
@@ -51,26 +51,23 @@ class DirectionPublisher(Node):
         cx = self._camera_info.k[2]
         cy = self._camera_info.k[5]
 
-        output = PoseArray()
+        output = Vector3Stamped()
         output.header.stamp = message.header.stamp
         output.header.frame_id = self._frame_id
-
-        for detection in message.detections:
-            u = detection.bbox.center.position.x
-            v = detection.bbox.center.position.y
-            horizontal = (u - cx) / fx
-            vertical = (v - cy) / fy
-
-            if self._swap_xy:
-                horizontal, vertical = vertical, horizontal
-
-            pose = Pose()
-            pose.position.x = self._x_sign * horizontal
-            pose.position.y = self._y_sign * vertical
-            pose.position.z = 1.0
-            pose.orientation.w = 1.0
-            output.poses.append(pose)
-
+        if not message.detections:
+            return
+        detection = max(
+            message.detections,
+            key=lambda item: max((r.hypothesis.score for r in item.results), default=0.0))
+        u = detection.bbox.center.position.x
+        v = detection.bbox.center.position.y
+        horizontal = (u - cx) / fx
+        vertical = (v - cy) / fy
+        if self._swap_xy:
+            horizontal, vertical = vertical, horizontal
+        output.vector.x = self._x_sign * horizontal
+        output.vector.y = self._y_sign * vertical
+        output.vector.z = 1.0
         self._publisher.publish(output)
 
 

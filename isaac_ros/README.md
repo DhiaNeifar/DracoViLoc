@@ -18,7 +18,7 @@ When a new YOLO version is selected, update DracoViLoc's model directory first.
 - `isaac_ros_yolo_bringup`: preprocessing, eight-block low-memory TensorRT
   inference, YOLO decoding, and annotated visualization.
 - `isaac_ros_yolo_direction`: selects the highest-confidence box and publishes
-  `/yolo/directions` and `/yolo/target_marker`.
+  `/yolo/direction` and `/yolo/target_marker`.
 - `yolo_video_publisher`: publishes a V4L2 camera or prerecorded video.
 
 ## 1. Deploy the latest checkpoint
@@ -213,7 +213,7 @@ Outputs:
 
 - `/detections_output`: YOLO boxes and confidence.
 - `/yolov8_processed_image`: annotated image.
-- `/yolo/directions`: one ray for the best box.
+- `/yolo/direction`: one `Vector3Stamped` ray for the best box.
 - `/yolo/target_marker`: blue RViz arrow.
 
 ## 10. Integrated host launch

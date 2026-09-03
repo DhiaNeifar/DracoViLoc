@@ -1,12 +1,10 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="dracoviloc">
-  <xacro:arg name="sim" default="true"/>
   <xacro:arg name="robot_ip" default="192.168.58.2"/>
   <xacro:arg name="initial_positions_file"
     default="$(find dracoviloc_description)/config/initial_positions.yaml"/>
   <xacro:arg name="ros2_controllers_file"
     default="$(find dracoviloc_bringup)/config/ros2_controllers.yaml"/>
-  <xacro:property name="sim" value="$(arg sim)"/>
   <xacro:property name="initial_positions"
     value="${xacro.load_yaml('$(arg initial_positions_file)')['initial_positions']}"/>
 
@@ -18,7 +16,7 @@
     <child link="base_link"/>
   </joint>
 
-  <xacro:fairino3_v6_robot_prefixed prefix="" sim="${sim}"/>
+  <xacro:fairino3_v6_robot_prefixed prefix=""/>
 
   <!-- D435i body convention inherited from Vicoman:
        +X forward/view direction, +Y left, +Z up.
@@ -71,13 +69,8 @@
 
   <ros2_control name="fairino_arm_system" type="system">
     <hardware>
-      <xacro:if value="${sim}">
-        <plugin>gz_ros2_control/GazeboSimSystem</plugin>
-      </xacro:if>
-      <xacro:unless value="${sim}">
-        <plugin>fairino_hardware/FairinoHardwareInterface</plugin>
-        <param name="robot_ip">$(arg robot_ip)</param>
-      </xacro:unless>
+      <plugin>fairino_hardware/FairinoHardwareInterface</plugin>
+      <param name="robot_ip">$(arg robot_ip)</param>
     </hardware>
     <xacro:macro name="controlled_joint" params="name">
       <joint name="${name}">
@@ -85,10 +78,6 @@
         <state_interface name="position">
           <param name="initial_value">${initial_positions[name]}</param>
         </state_interface>
-        <xacro:if value="${sim}">
-          <state_interface name="velocity"/>
-          <state_interface name="effort"/>
-        </xacro:if>
       </joint>
     </xacro:macro>
     <xacro:controlled_joint name="joint1"/>
@@ -99,12 +88,4 @@
     <xacro:controlled_joint name="joint6"/>
   </ros2_control>
 
-  <xacro:if value="${sim}">
-    <gazebo>
-      <plugin filename="gz_ros2_control-system"
-        name="gz_ros2_control::GazeboSimROS2ControlPlugin">
-        <parameters>$(arg ros2_controllers_file)</parameters>
-      </plugin>
-    </gazebo>
-  </xacro:if>
 </robot>

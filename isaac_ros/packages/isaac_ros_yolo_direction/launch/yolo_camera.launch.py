@@ -22,6 +22,7 @@ def generate_launch_description():
     horizontal_fov_deg = LaunchConfiguration('horizontal_fov_deg')
     model_path = LaunchConfiguration('model_path')
     engine_path = LaunchConfiguration('engine_path')
+    direction_frame = LaunchConfiguration('direction_frame')
 
     inference = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
@@ -75,6 +76,7 @@ def generate_launch_description():
         executable='direction_publisher',
         name='yolo_direction_publisher',
         output='screen',
+        parameters=[{'frame_id': direction_frame}],
     )
 
     visualizer = Node(
@@ -100,6 +102,7 @@ def generate_launch_description():
         DeclareLaunchArgument('camera_fps', default_value='60'),
         DeclareLaunchArgument('publish_rate', default_value='30.0'),
         DeclareLaunchArgument('horizontal_fov_deg', default_value='100.0'),
+        DeclareLaunchArgument('direction_frame', default_value='table_mic_link'),
         DeclareLaunchArgument(
             'model_path',
             default_value='/workspaces/isaac_ros-dev/models/drone_yolo11n_best.onnx',

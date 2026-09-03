@@ -8,17 +8,17 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
   <exec_depend>controller_manager</exec_depend>
   <exec_depend>dracoviloc_description</exec_depend>
+  <exec_depend>dracoviloc_ast</exec_depend>
+  <exec_depend>dracoviloc_gre</exec_depend>
+  <exec_depend>dracoviloc_ekf</exec_depend>
   <exec_depend>dracoviloc_odas</exec_depend>
   <exec_depend>dracoviloc_moveit_config</exec_depend>
   <exec_depend>dracoviloc_tracking</exec_depend>
-  <exec_depend>gz_ros2_control</exec_depend>
   <exec_depend>joint_state_broadcaster</exec_depend>
   <exec_depend>joint_trajectory_controller</exec_depend>
   <exec_depend>moveit_configs_utils</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <depend>rclcpp</depend>
-  <exec_depend>ros_gz_bridge</exec_depend>
-  <exec_depend>ros_gz_sim</exec_depend>
   <exec_depend>rviz2</exec_depend>
   <exec_depend>xacro</exec_depend>
   <depend>sensor_msgs</depend>

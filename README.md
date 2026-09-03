@@ -7,7 +7,7 @@ Nano.
 
 The current validated architecture is:
 
-- DracoViLoc, Gazebo, RViz, ODAS, AST, GRE, and arm control run on the host.
+- DracoViLoc, RViz, ODAS, AST, GRE, and physical arm control run on the host.
 - Isaac ROS YOLO runs inside its Docker development container.
 - The host and container exchange ROS 2 topics through DDS.
 - The EKF exists but is deliberately disabled until the individual sensors
@@ -217,7 +217,7 @@ warning is harmless for this fixed model.
 
 ### AST ONNX to TensorRT
 
-Stop YOLO, Gazebo, RViz, and other GPU-heavy processes before building this
+Stop YOLO, RViz, and other GPU-heavy processes before building this
 large engine:
 
 ```bash
@@ -310,17 +310,14 @@ ros2 launch dracoviloc_bringup arm_audio_demo.launch.py \
   ast_enabled:=true \
   gre_enabled:=true \
   visual_enabled:=false \
-  fusion_enabled:=true \
+  ekf_enabled:=false \
   tracking_mode:=direct_yolo \
   always_classify:=false \
-  use_rviz:=true \
-  use_gui:=false
+  use_rviz:=true
 ```
 
-Here, `fusion_enabled:=true` starts the shared AST/GRE classification launch.
-Because `tracking_mode:=direct_yolo`, it passes `ekf_enabled=false`: the EKF
-does not run. `visual_enabled:=false` avoids the unfinished YOLO-to-EKF
-adapter; YOLO is already publishing from the container.
+Here, `ekf_enabled:=false` keeps fusion off. YOLO is already publishing from
+the container.
 
 The result includes live ODAS points, AST and GRE confidence, YOLO detections
 and marker, RViz, and simulated arm tracking of YOLO. Use
@@ -333,7 +330,7 @@ and marker, RViz, and simulated arm tracking of YOLO. Use
 - `direct_ast`: AST gates the strongest active ODAS direction; no EKF.
 - `direct_either`: AST or GRE gates the strongest ODAS direction; no EKF.
 - `direct_yolo`: follow the highest-confidence YOLO box ray; no EKF.
-- `ekf`: follow `/fused_target_pose`. Present but not part of the currently
+- `ekf`: follow `/ekf_fused_target_pose`.
   validated workflow.
 
 ## Useful checks
@@ -354,20 +351,19 @@ joint_state_broadcaster  ...  active
 arm_controller           ...  active
 ```
 
-Gazebo activates them automatically in simulation. Spawners are retained only
-for the real-arm path.
+The physical-arm bringup activates them through `ros2_control`.
 
 ## Main topics
 
 - `/sss`: separated multichannel ODAS audio.
 - `/sst`: ODAS tracked acoustic directions.
 - `/ssl_pcl2`: ODAS candidate point cloud.
-- `/audio_classifier/detection`: AST verdict and confidence.
-- `/gre_classifier/detection`: GRE verdict and confidence.
+- `/ast/direction`: AST-classified acoustic direction.
+- `/gre/direction`: GRE-classified acoustic direction.
 - `/detections_output`: YOLO boxes and confidence.
-- `/yolo/directions`: highest-confidence YOLO ray.
+- `/yolo/direction`: highest-confidence YOLO ray.
 - `/yolo/target_marker`: RViz YOLO arrow.
-- `/fused_target_pose`: EKF output; unused in the validated direct workflow.
+- `/ekf_fused_target_pose`: EKF-filtered direction.
 - `/joint_states`: FAIRINO joint feedback.
 
 ## Troubleshooting
@@ -394,7 +390,7 @@ the container. They duplicate JetPack's CUDA stack.
 
 ### RViz drops YOLO markers
 
-The physical camera uses wall time while Gazebo uses `/clock`. The marker uses
+The physical camera and host ROS nodes use wall time. The marker uses
 a zero timestamp so RViz selects the latest transform. Use
 `direction_frame:=table_mic_link` for the current hardware-in-the-loop test.
 

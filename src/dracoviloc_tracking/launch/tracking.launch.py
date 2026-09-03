@@ -13,6 +13,6 @@ def generate_launch_description():
         Node(
             package="dracoviloc_tracking",
             executable="arm_drone_tracker",
-            parameters=[config, {"use_sim_time": True}],
+            parameters=[config, {"use_sim_time": False}],
             output="screen")
     ])

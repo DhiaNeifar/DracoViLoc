@@ -102,39 +102,19 @@ public:
       [this](const sensor_msgs::msg::JointState::SharedPtr msg) {joint_callback(*msg);});
 
     if (ekf_enabled_) {
-      fused_sub_ = create_subscription<geometry_msgs::msg::PointStamped>(
-        "/fused_target_pose", 10,
-        [this](const geometry_msgs::msg::PointStamped::SharedPtr msg) {
-          fused_callback(*msg);
+      fused_sub_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
+        "/ekf_fused_target_pose", 10,
+        [this](const geometry_msgs::msg::Vector3Stamped::SharedPtr msg) {
+          direction_callback(*msg);
         });
     } else {
-      if (direct_classifier_source_ == "yolo") {
-        yolo_sub_ = create_subscription<geometry_msgs::msg::PoseArray>(
-          "/yolo/directions", 10,
-          [this](const geometry_msgs::msg::PoseArray::SharedPtr msg) {
-            yolo_callback(*msg);
-          });
-      } else {
-        sst_sub_ = create_subscription<odas_ros_msgs::msg::OdasSstArrayStamped>(
-          "/sst", 10,
-          [this](const odas_ros_msgs::msg::OdasSstArrayStamped::SharedPtr msg) {
-            sst_callback(*msg);
-          });
-        if (direct_classifier_source_ == "ast" || direct_classifier_source_ == "either") {
-          ast_sub_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
-            "/audio_classifier/detection", 10,
-            [this](const geometry_msgs::msg::Vector3Stamped::SharedPtr msg) {
-              classifier_callback(*msg, ast_verdict_, have_ast_verdict_);
-            });
-        }
-        if (direct_classifier_source_ == "gre" || direct_classifier_source_ == "either") {
-          gre_sub_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
-            "/gre_classifier/detection", 10,
-            [this](const geometry_msgs::msg::Vector3Stamped::SharedPtr msg) {
-              classifier_callback(*msg, gre_verdict_, have_gre_verdict_);
-            });
-        }
-      }
+      const auto subscribe = [this](const std::string & topic, auto & sub) {
+        sub = create_subscription<geometry_msgs::msg::Vector3Stamped>(topic, 10,
+          [this](const geometry_msgs::msg::Vector3Stamped::SharedPtr msg) {direction_callback(*msg);});
+      };
+      if (direct_classifier_source_ == "yolo") subscribe("/yolo/direction", yolo_sub_);
+      if (direct_classifier_source_ == "ast" || direct_classifier_source_ == "either") subscribe("/ast/direction", ast_sub_);
+      if (direct_classifier_source_ == "gre" || direct_classifier_source_ == "either") subscribe("/gre/direction", gre_sub_);
     }
 
     // Kept for compatibility: an external supervisor can still veto motion.
@@ -175,6 +155,12 @@ private:
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
       "direct YOLO target ray=(%.3f, %.3f, %.3f)",
       point.x, point.y, point.z);
+  }
+
+  void direction_callback(const geometry_msgs::msg::Vector3Stamped & msg) {
+    Eigen::Vector3d local(msg.vector.x, msg.vector.y, msg.vector.z);
+    if (local.norm() < 1e-6) return;
+    accept_local_direction(local.normalized(), msg.header.frame_id);
   }
 
   void classifier_callback(
@@ -421,8 +407,8 @@ private:
     "joint1", "joint2", "joint3", "joint4", "joint5", "joint6"};
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr command_pub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_sub_;
-  rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr fused_sub_;
-  rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr yolo_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr fused_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr yolo_sub_;
   rclcpp::Subscription<odas_ros_msgs::msg::OdasSstArrayStamped>::SharedPtr sst_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr ast_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr gre_sub_;

@@ -13,8 +13,10 @@ DracoViLoc. Runtime workspaces contain deployed copies only.
 - `training_report.json`: training/evaluation record.
 - `drone_ast.onnx`: static `[1,128,128] -> [1,2]` portable export.
 
-The generated engine is deployed to
-`src/dracoviloc_audio_fusion/models/drone_ast.engine`.
+- `drone_ast.engine`: generated TensorRT engine for the current Jetson.
+
+`classification_fusion.launch.py` reads both the feature-extractor files and
+the engine directly from this directory. No package-local copy is used.
 
 ### `gre/`
 
@@ -23,8 +25,8 @@ The generated engine is deployed to
 - `model_logmel_meta.json`: feature/model metadata.
 - `model_logmel.engine`: engine for the current Jetson.
 
-Copy the engine to
-`src/dracoviloc_audio_fusion/models/model_logmel.engine`.
+`classification_fusion.launch.py` reads the engine and metadata directly from
+this directory. No package-local copy is used.
 
 ### `yolo/`
 
@@ -43,7 +45,7 @@ Copy the current checkpoint to the Isaac workspace, export a same-basename
 4. Export ONNX from these stored weights.
 5. Verify shapes, bindings, and classes.
 6. Build TensorRT on the target Jetson.
-7. Deploy the engine to its runtime path.
+7. Keep the generated engine beside its source model in this directory.
 8. Update launch paths and documentation.
 9. Test standalone inference before arm motion or EKF.
 
