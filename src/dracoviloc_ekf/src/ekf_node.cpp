@@ -13,7 +13,8 @@ public:
     q_ = declare_parameter("process_noise", 0.05);
     r_ = declare_parameter("measurement_noise", 0.02);
     gate_ = declare_parameter("innovation_gate", 11.34);
-    pub_ = create_publisher<Msg>("/ekf_fused_target_pose", 10);
+    pub_ = create_publisher<Msg>("/ekf/direction", 10);
+    legacy_pub_ = create_publisher<Msg>("/ekf_fused_target_pose", 10);
     add_source("yolo_enabled", "/yolo/direction", yolo_);
     add_source("ast_enabled", "/ast/direction", ast_);
     add_source("gre_enabled", "/gre/direction", gre_);
@@ -54,10 +55,12 @@ private:
   }
   void publish(const builtin_interfaces::msg::Time & stamp) {
     Msg out; out.header.stamp=stamp; out.header.frame_id=frame_;
-    out.vector.x=x_(0); out.vector.y=x_(1); out.vector.z=x_(2); pub_->publish(out);
+    out.vector.x=x_(0); out.vector.y=x_(1); out.vector.z=x_(2);
+    pub_->publish(out);
+    legacy_pub_->publish(out);
   }
   std::string frame_; double q_,r_,gate_,last_t_{0}; bool ready_{false};
   Eigen::Matrix<double,6,1> x_; Eigen::Matrix<double,6,6> P_;
-  rclcpp::Publisher<Msg>::SharedPtr pub_; Sub yolo_,ast_,gre_;
+  rclcpp::Publisher<Msg>::SharedPtr pub_, legacy_pub_; Sub yolo_,ast_,gre_;
 };
 int main(int argc,char **argv){rclcpp::init(argc,argv);rclcpp::spin(std::make_shared<DirectionEkf>());rclcpp::shutdown();}

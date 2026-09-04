@@ -177,11 +177,17 @@ class Yolov8Visualizer(Node):
             cv2_img, encoding=img_msg.encoding)
         self._processed_image_pub.publish(processed_img)
 
-
 def main():
     rclpy.init()
-    rclpy.spin(Yolov8Visualizer())
-    rclpy.shutdown()
+    node = Yolov8Visualizer()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

@@ -3,6 +3,7 @@
 build/
 install/
 log/
+runs/
 
 # ROS 2 colcon files
 *.pyc
@@ -81,28 +82,18 @@ __pycache__/
 
 # Ignore hidden files except .gitignore
 .*
+!.gitattributes
 !.gitignore
 
-# Audio fusion pipeline (dracoviloc_audio_fusion): the trt_env venv and the
-# AST TensorRT engine are machine-specific and not portable between Jetsons.
+# Model runtime environments are local virtual environments.
 /trt_env/
 /gre_env/
-src/dracoviloc_audio_fusion/models/*.engine
 
-# Centralized local model artifacts. The README is tracked, while weights,
-# portable exports, and machine-specific TensorRT engines remain local.
-/models/*
-!/models/README.md
-
-# Isaac ROS deployment artifacts. Keep the portable model and regression video
-# in DracoViLoc; generate TensorRT engines and Python environments per target.
+# Isaac ROS deployment artifacts.
 !isaac_ros/media/
 !isaac_ros/media/drone-video1.mp4
 !isaac_ros/models/
 !isaac_ros/models/drone_yolo11n_best.pt
 !isaac_ros/models/drone_yolo11n_best.onnx
-isaac_ros/models/*.plan
-isaac_ros/models/yolo/
-isaac_ros/models/*_engine/
 isaac_ros/results/
 src/vicoman_vision/realsense-ros/

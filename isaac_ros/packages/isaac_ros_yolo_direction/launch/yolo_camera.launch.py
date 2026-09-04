@@ -6,11 +6,13 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.actions import RegisterEventHandler
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -23,6 +25,8 @@ def generate_launch_description():
     model_path = LaunchConfiguration('model_path')
     engine_path = LaunchConfiguration('engine_path')
     direction_frame = LaunchConfiguration('direction_frame')
+    use_viewer = LaunchConfiguration('use_viewer')
+    record = LaunchConfiguration('record')
 
     inference = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
@@ -84,7 +88,26 @@ def generate_launch_description():
         executable='yolo_visualizer.py',
         name='yolov8_visualizer',
         output='screen',
-        parameters=[{'class_names': ['drone']}],
+        parameters=[{
+            'class_names': ['drone'],
+        }],
+    )
+
+    recorder = Node(
+        package='isaac_ros_yolo_bringup',
+        executable='multimodal_recorder',
+        name='multimodal_recorder',
+        output='screen',
+        parameters=[{
+            'output_root': LaunchConfiguration('recording_root'),
+            'audio_device': LaunchConfiguration('recording_audio_device'),
+            'video_topic': '/yolov8_processed_image',
+            'video_fps': ParameterValue(
+                LaunchConfiguration('recording_fps'), value_type=float),
+            'video_bitrate': ParameterValue(
+                LaunchConfiguration('recording_bitrate'), value_type=int),
+        }],
+        condition=IfCondition(record),
     )
 
     viewer = Node(
@@ -93,6 +116,7 @@ def generate_launch_description():
         name='yolo_image_viewer',
         output='screen',
         remappings=[('image', '/yolov8_processed_image')],
+        condition=IfCondition(use_viewer),
     )
 
     return LaunchDescription([
@@ -102,7 +126,18 @@ def generate_launch_description():
         DeclareLaunchArgument('camera_fps', default_value='60'),
         DeclareLaunchArgument('publish_rate', default_value='30.0'),
         DeclareLaunchArgument('horizontal_fov_deg', default_value='100.0'),
-        DeclareLaunchArgument('direction_frame', default_value='table_mic_link'),
+        DeclareLaunchArgument('direction_frame', default_value='uma16_camera_direction'),
+        DeclareLaunchArgument('use_viewer', default_value='true'),
+        DeclareLaunchArgument(
+            'record', default_value='false',
+            description='Record UMA16 audio and annotated YOLO video.'),
+        DeclareLaunchArgument(
+            'recording_root', default_value='/home/dhianeifar/DracoViLoc/runs'),
+        DeclareLaunchArgument(
+            'recording_audio_device', default_value='auto',
+            description='ALSA input override; auto discovers the UMA16.'),
+        DeclareLaunchArgument('recording_fps', default_value='15.0'),
+        DeclareLaunchArgument('recording_bitrate', default_value='4000000'),
         DeclareLaunchArgument(
             'model_path',
             default_value='/workspaces/isaac_ros-dev/models/drone_yolo11n_best.onnx',
@@ -114,6 +149,7 @@ def generate_launch_description():
         inference,
         direction,
         visualizer,
+        recorder,
         viewer,
         start_camera_after_configuration,
         configure_camera,

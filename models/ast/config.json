@@ -1,0 +1,31 @@
+{
+  "architectures": [
+    "ASTForAudioClassification"
+  ],
+  "attention_probs_dropout_prob": 0.0,
+  "dtype": "float32",
+  "frequency_stride": 10,
+  "hidden_act": "gelu",
+  "hidden_dropout_prob": 0.0,
+  "hidden_size": 768,
+  "id2label": {
+    "0": "no_drone",
+    "1": "drone"
+  },
+  "initializer_range": 0.02,
+  "intermediate_size": 3072,
+  "label2id": {
+    "drone": 1,
+    "no_drone": 0
+  },
+  "layer_norm_eps": 1e-12,
+  "max_length": 128,
+  "model_type": "audio-spectrogram-transformer",
+  "num_attention_heads": 12,
+  "num_hidden_layers": 12,
+  "num_mel_bins": 128,
+  "patch_size": 16,
+  "qkv_bias": true,
+  "time_stride": 10,
+  "transformers_version": "5.14.1"
+}

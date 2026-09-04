@@ -17,14 +17,17 @@ def _enabled(context, name):
 def _configure_pipeline(context, ast_share, gre_share, ekf_share):
     mode = LaunchConfiguration("tracking_mode").perform(context)
     audio_enabled = _enabled(context, "audio_enabled")
-    visual_enabled = _enabled(context, "visual_enabled")
-    ekf_enabled = _enabled(context, "ekf_enabled")
+    yolo_enabled = _enabled(context, "yolo_enabled")
+    fusion_enabled = _enabled(context, "fusion_enabled")
     ast_enabled = _enabled(context, "ast_enabled")
     gre_enabled = _enabled(context, "gre_enabled")
 
     if mode.startswith("direct_"):
         source = mode.removeprefix("direct_")
-        if source != "yolo":
+        if source == "yolo":
+            if not yolo_enabled:
+                raise RuntimeError("tracking_mode=direct_yolo requires yolo_enabled:=true")
+        else:
             if not audio_enabled:
                 raise RuntimeError(f"tracking_mode={mode} requires audio_enabled:=true")
             if source == "ast" and not ast_enabled:
@@ -35,15 +38,15 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share):
                 raise RuntimeError(f"tracking_mode={mode} requires AST or GRE to be enabled")
     elif mode == "ekf":
         source = "gre"
-        if not ekf_enabled:
-            raise RuntimeError("tracking_mode=ekf requires ekf_enabled:=true")
-        if not (audio_enabled or visual_enabled):
-            raise RuntimeError("tracking_mode=ekf requires audio_enabled or visual_enabled")
+        if not fusion_enabled:
+            raise RuntimeError("tracking_mode=ekf requires fusion_enabled:=true")
+        if not (audio_enabled or yolo_enabled):
+            raise RuntimeError("tracking_mode=ekf requires audio_enabled or yolo_enabled")
     else:
         source = "gre"
 
     actions = []
-    if audio_enabled or mode == "direct_yolo":
+    if audio_enabled or yolo_enabled:
         actions.append(Node(
             package="tf2_ros",
             executable="static_transform_publisher",
@@ -73,10 +76,10 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share):
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(gre_share, "launch", "gre.launch.py")),
             launch_arguments={"min_activity": LaunchConfiguration("min_activity")}.items()))
-    if ekf_enabled:
+    if fusion_enabled:
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(ekf_share, "launch", "ekf.launch.py")),
-            launch_arguments={"yolo_enabled": "true" if visual_enabled else "false",
+            launch_arguments={"yolo_enabled": "true" if yolo_enabled else "false",
                               "ast_enabled": "true" if ast_enabled and audio_enabled else "false",
                               "gre_enabled": "true" if gre_enabled and audio_enabled else "false"}.items()))
 
@@ -146,7 +149,7 @@ def generate_launch_description():
                      "direct_yolo", "ekf"],
             description="Arm target source and filtering mode."),
         DeclareLaunchArgument(
-            "ekf_enabled", default_value="false",
+            "fusion_enabled", default_value="false",
             description="Launch dracoviloc_ekf using the enabled detector sources."),
         DeclareLaunchArgument(
             "ast_enabled", default_value="true",
@@ -155,9 +158,9 @@ def generate_launch_description():
             "gre_enabled", default_value="false",
             description="Launch the independent GRE classifier package."),
         DeclareLaunchArgument(
-            "visual_enabled", default_value="false",
+            "yolo_enabled", default_value="false",
             description="Consume externally published YOLO directions in "
-                        "the EKF when ekf_enabled is true. Isaac ROS is "
+                        "the EKF when fusion_enabled is true. Isaac ROS is "
                         "launched separately inside its container."),
         DeclareLaunchArgument(
             "ast_threshold", default_value="0.20",

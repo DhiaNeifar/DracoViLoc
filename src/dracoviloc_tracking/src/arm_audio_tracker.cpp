@@ -103,7 +103,7 @@ public:
 
     if (ekf_enabled_) {
       fused_sub_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
-        "/ekf_fused_target_pose", 10,
+        "/ekf/direction", 10,
         [this](const geometry_msgs::msg::Vector3Stamped::SharedPtr msg) {
           direction_callback(*msg);
         });

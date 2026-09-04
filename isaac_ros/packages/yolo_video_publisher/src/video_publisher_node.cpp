@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <chrono>
-#include <cmath>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -24,7 +23,6 @@ public:
     const auto video_path = declare_parameter<std::string>("video_path", "");
     loop_ = declare_parameter<bool>("loop", false);
     const auto requested_rate = declare_parameter<double>("publish_rate", 0.0);
-    const auto horizontal_fov_deg = declare_parameter<double>("horizontal_fov_deg", 0.0);
     const auto image_topic = declare_parameter<std::string>("image_topic", "/image");
     const auto camera_info_topic =
       declare_parameter<std::string>("camera_info_topic", "/camera_info");
@@ -45,10 +43,6 @@ public:
     if (publish_rate_ <= 0.0) {
       publish_rate_ = 30.0;
     }
-    focal_length_pixels_ = horizontal_fov_deg > 0.0 ?
-      static_cast<double>(width_) /
-      (2.0 * std::tan(horizontal_fov_deg * std::acos(-1.0) / 360.0)) :
-      static_cast<double>(width_);
 
     auto qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable();
     image_publisher_ = create_publisher<sensor_msgs::msg::Image>(image_topic, qos);
@@ -109,13 +103,13 @@ private:
     camera_info->distortion_model = "plumb_bob";
     camera_info->d.assign(5, 0.0);
     camera_info->k = {
-      focal_length_pixels_, 0.0, width_ / 2.0,
-      0.0, focal_length_pixels_, height_ / 2.0,
+      static_cast<double>(width_), 0.0, width_ / 2.0,
+      0.0, static_cast<double>(height_), height_ / 2.0,
       0.0, 0.0, 1.0};
     camera_info->r = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
     camera_info->p = {
-      focal_length_pixels_, 0.0, width_ / 2.0, 0.0,
-      0.0, focal_length_pixels_, height_ / 2.0, 0.0,
+      static_cast<double>(width_), 0.0, width_ / 2.0, 0.0,
+      0.0, static_cast<double>(height_), height_ / 2.0, 0.0,
       0.0, 0.0, 1.0, 0.0};
 
     camera_info_publisher_->publish(std::move(camera_info));
@@ -126,7 +120,6 @@ private:
   uint32_t width_{0};
   uint32_t height_{0};
   double publish_rate_{30.0};
-  double focal_length_pixels_{0.0};
   bool loop_{false};
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_publisher_;
