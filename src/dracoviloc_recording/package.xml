@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>dracoviloc_recording</name>
+  <version>0.1.0</version>
+  <description>Continuous ROS-topic video and separated-audio recording for DracoViLoc.</description>
+  <maintainer email="maintainer@example.com">DracoViLoc</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>audio_utils_msgs</depend>
+  <depend>odas_ros_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

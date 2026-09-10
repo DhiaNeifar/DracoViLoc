@@ -12,6 +12,7 @@
   <exec_depend>dracoviloc_gre</exec_depend>
   <exec_depend>dracoviloc_ekf</exec_depend>
   <exec_depend>dracoviloc_odas</exec_depend>
+  <exec_depend>dracoviloc_recording</exec_depend>
   <exec_depend>dracoviloc_moveit_config</exec_depend>
   <exec_depend>dracoviloc_tracking</exec_depend>
   <exec_depend>joint_state_broadcaster</exec_depend>

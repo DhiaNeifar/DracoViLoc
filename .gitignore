@@ -89,6 +89,9 @@ __pycache__/
 /trt_env/
 /gre_env/
 
+# Runtime recordings.
+/runs/
+
 # Isaac ROS deployment artifacts.
 !isaac_ros/media/
 !isaac_ros/media/drone-video1.mp4

@@ -12,7 +12,6 @@ from launch.actions import RegisterEventHandler
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -26,7 +25,6 @@ def generate_launch_description():
     engine_path = LaunchConfiguration('engine_path')
     direction_frame = LaunchConfiguration('direction_frame')
     use_viewer = LaunchConfiguration('use_viewer')
-    record = LaunchConfiguration('record')
 
     inference = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
@@ -93,23 +91,6 @@ def generate_launch_description():
         }],
     )
 
-    recorder = Node(
-        package='isaac_ros_yolo_bringup',
-        executable='multimodal_recorder',
-        name='multimodal_recorder',
-        output='screen',
-        parameters=[{
-            'output_root': LaunchConfiguration('recording_root'),
-            'audio_device': LaunchConfiguration('recording_audio_device'),
-            'video_topic': '/yolov8_processed_image',
-            'video_fps': ParameterValue(
-                LaunchConfiguration('recording_fps'), value_type=float),
-            'video_bitrate': ParameterValue(
-                LaunchConfiguration('recording_bitrate'), value_type=int),
-        }],
-        condition=IfCondition(record),
-    )
-
     viewer = Node(
         package='image_tools',
         executable='showimage',
@@ -129,16 +110,6 @@ def generate_launch_description():
         DeclareLaunchArgument('direction_frame', default_value='uma16_camera_direction'),
         DeclareLaunchArgument('use_viewer', default_value='true'),
         DeclareLaunchArgument(
-            'record', default_value='false',
-            description='Record UMA16 audio and annotated YOLO video.'),
-        DeclareLaunchArgument(
-            'recording_root', default_value='/home/dhianeifar/DracoViLoc/runs'),
-        DeclareLaunchArgument(
-            'recording_audio_device', default_value='auto',
-            description='ALSA input override; auto discovers the UMA16.'),
-        DeclareLaunchArgument('recording_fps', default_value='15.0'),
-        DeclareLaunchArgument('recording_bitrate', default_value='4000000'),
-        DeclareLaunchArgument(
             'model_path',
             default_value='/workspaces/isaac_ros-dev/models/drone_yolo11n_best.onnx',
         ),
@@ -149,7 +120,6 @@ def generate_launch_description():
         inference,
         direction,
         visualizer,
-        recorder,
         viewer,
         start_camera_after_configuration,
         configure_camera,

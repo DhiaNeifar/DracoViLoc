@@ -21,6 +21,11 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share):
     fusion_enabled = _enabled(context, "fusion_enabled")
     ast_enabled = _enabled(context, "ast_enabled")
     gre_enabled = _enabled(context, "gre_enabled")
+    recording_enabled = _enabled(context, "recording_enabled")
+
+    if recording_enabled and not (audio_enabled or yolo_enabled):
+        raise RuntimeError(
+            "recording_enabled=true requires audio_enabled or yolo_enabled")
 
     if mode.startswith("direct_"):
         source = mode.removeprefix("direct_")
@@ -46,6 +51,25 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share):
         source = "gre"
 
     actions = []
+    if recording_enabled:
+        actions.append(Node(
+            package="dracoviloc_recording",
+            executable="multimodal_recorder",
+            name="multimodal_recorder",
+            output="screen",
+            parameters=[{
+                "output_root": LaunchConfiguration("recording_root"),
+                "video_topic": LaunchConfiguration("recording_video_topic"),
+                "audio_topic": LaunchConfiguration("recording_audio_topic"),
+                "sst_topic": LaunchConfiguration("recording_sst_topic"),
+                "require_video": yolo_enabled,
+                "require_audio": audio_enabled,
+                "require_sst": audio_enabled,
+                "video_fps": ParameterValue(
+                    LaunchConfiguration("recording_fps"), value_type=float),
+                "video_crf": ParameterValue(
+                    LaunchConfiguration("recording_crf"), value_type=int),
+            }]))
     if audio_enabled or yolo_enabled:
         actions.append(Node(
             package="tf2_ros",
@@ -162,6 +186,19 @@ def generate_launch_description():
             description="Consume externally published YOLO directions in "
                         "the EKF when fusion_enabled is true. Isaac ROS is "
                         "launched separately inside its container."),
+        DeclareLaunchArgument(
+            "recording_enabled", default_value="false",
+            description="Continuously record ROS video and separated audio."),
+        DeclareLaunchArgument(
+            "recording_root", default_value="/home/dhianeifar/DracoViLoc/runs"),
+        DeclareLaunchArgument(
+            "recording_video_topic", default_value="/yolov8_processed_image"),
+        DeclareLaunchArgument(
+            "recording_audio_topic", default_value="/sss"),
+        DeclareLaunchArgument(
+            "recording_sst_topic", default_value="/sst"),
+        DeclareLaunchArgument("recording_fps", default_value="15.0"),
+        DeclareLaunchArgument("recording_crf", default_value="23"),
         DeclareLaunchArgument(
             "ast_threshold", default_value="0.20",
             description="AST drone-probability threshold."),

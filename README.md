@@ -290,18 +290,11 @@ ros2 launch isaac_ros_yolo_direction yolo_camera.launch.py \
   camera_fps:=30 \
   publish_rate:=15.0 \
   direction_frame:=table_mic_link \
-  use_viewer:=true \
-  record:=true \
-  recording_root:=/home/dhianeifar/DracoViLoc/runs \
-  recording_fps:=15.0
+  use_viewer:=true
 ```
 
-The YOLO launch starts its C++ recorder when `record:=true`. It records the
-annotated image and captures the UMA16 directly through ALSA into one session
-directory. Video is hardware-encoded as H.264 in an MP4 container.
-
 The direction publisher uses only the highest-confidence box. It publishes
-one `(x,y,1)` direction on `/yolo/directions` and a fixed-length blue marker
+one normalized direction on `/yolo/direction` and a fixed-length blue marker
 on `/yolo/target_marker`. This is a bearing, not a 3-D position; no depth is
 estimated. The mounted-camera convention currently inverts image X and Y.
 
@@ -310,16 +303,20 @@ estimated. The mounted-camera convention currently inverts image X and Y.
 ```bash
 cd ~/DracoViLoc
 source /opt/ros/humble/setup.bash
+source ~/odas_ws/install/setup.bash
 source install/setup.bash
 
 ros2 launch dracoviloc_bringup arm_audio_demo.launch.py \
   audio_enabled:=true \
   ast_enabled:=true \
   gre_enabled:=true \
-  yolo_enabled:=false \
+  yolo_enabled:=true \
   fusion_enabled:=false \
   tracking_mode:=direct_yolo \
   always_classify:=false \
+  recording_enabled:=true \
+  recording_root:=/home/dhianeifar/DracoViLoc/runs \
+  recording_fps:=15.0 \
   use_rviz:=true
 ```
 
@@ -330,18 +327,26 @@ The result includes live ODAS points, AST and GRE confidence, YOLO detections
 and marker, RViz, and simulated arm tracking of YOLO. Use
 `tracking_mode:=off` for visualization without arm movement.
 
-With `record:=true` in the YOLO launch, the C++ recorder creates:
+With `recording_enabled:=true` in the DracoViLoc launch, the host-side C++
+recorder subscribes to `/yolov8_processed_image` and `/sss`. It never opens
+the camera or sound card directly, so it cannot compete with YOLO or ODAS for
+sensor access. Each launch creates:
 
 ```text
 ~/DracoViLoc/runs/DD_MM_YYYY_HH_MM_SS/
-├── audio.wav    # original 16-channel UMA16 stream, 44.1 kHz, signed 32-bit PCM
-└── video.mp4    # annotated YOLO frames
+├── camera.mp4             # annotated YOLO frames, H.264
+├── audio_sss.wav          # four-channel ODAS /sss stream, 44.1 kHz, PCM16
+├── audio_sst.jsonl        # timestamped ODAS track slots, IDs, bearings, activity
+└── metadata.json          # topics, formats, frame counts, and completion state
 ```
 
-The final timestamp field is seconds. Stop the YOLO launch cleanly with Ctrl+C
-so the WAV sizes and video trailer are finalized. Optional YOLO recording
-arguments are `recording_root`, `recording_audio_device`, `recording_fps`, and
-`recording_bitrate`.
+The final timestamp field is seconds. Stop the DracoViLoc launch cleanly with
+Ctrl+C so the WAV header and MP4 trailer are finalized. Optional recording
+arguments are `recording_root`, `recording_video_topic`,
+`recording_audio_topic`, `recording_sst_topic`, `recording_fps`, and
+`recording_crf`. The recorder waits for every enabled input topic before
+starting, so the media and SST timeline share one recording start. If only one
+source topic is active, only that media file is created.
 Recording output under `runs/` is ignored by Git.
 
 ## Tracking modes
@@ -351,7 +356,7 @@ Recording output under `runs/` is ignored by Git.
 - `direct_ast`: AST gates the strongest active ODAS direction; no EKF.
 - `direct_either`: AST or GRE gates the strongest ODAS direction; no EKF.
 - `direct_yolo`: follow the highest-confidence YOLO box ray; no EKF.
-- `ekf`: follow `/ekf_fused_target_pose`.
+- `ekf`: follow `/ekf/direction`.
   validated workflow.
 
 ## Useful checks
