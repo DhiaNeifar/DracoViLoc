@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <cmath>
+#include <deque>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <Eigen/Dense>
 #include "geometry_msgs/msg/vector3_stamped.hpp"
@@ -13,6 +15,10 @@ public:
     q_ = declare_parameter("process_noise", 0.05);
     r_ = declare_parameter("measurement_noise", 0.02);
     gate_ = declare_parameter("innovation_gate", 11.34);
+    output_average_window_ = declare_parameter("output_average_window", 5);
+    if (output_average_window_ < 1 || output_average_window_ > 100) {
+      throw std::invalid_argument("output_average_window must be between 1 and 100");
+    }
     pub_ = create_publisher<Msg>("/ekf/direction", 10);
     legacy_pub_ = create_publisher<Msg>("/ekf_fused_target_pose", 10);
     add_source("yolo_enabled", "/yolo/direction", yolo_);
@@ -54,12 +60,25 @@ private:
     x_.head<3>().normalize(); publish(msg.header.stamp);
   }
   void publish(const builtin_interfaces::msg::Time & stamp) {
+    output_history_.push_back(x_.head<3>().normalized());
+    while (output_history_.size() > static_cast<std::size_t>(output_average_window_)) {
+      output_history_.pop_front();
+    }
+    Eigen::Vector3d averaged = Eigen::Vector3d::Zero();
+    for (const auto & direction : output_history_) averaged += direction;
+    if (averaged.norm() < 1e-6) {
+      averaged = x_.head<3>().normalized();
+    } else {
+      averaged.normalize();
+    }
     Msg out; out.header.stamp=stamp; out.header.frame_id=frame_;
-    out.vector.x=x_(0); out.vector.y=x_(1); out.vector.z=x_(2);
+    out.vector.x=averaged.x(); out.vector.y=averaged.y(); out.vector.z=averaged.z();
     pub_->publish(out);
     legacy_pub_->publish(out);
   }
   std::string frame_; double q_,r_,gate_,last_t_{0}; bool ready_{false};
+  int output_average_window_{5};
+  std::deque<Eigen::Vector3d> output_history_;
   Eigen::Matrix<double,6,1> x_; Eigen::Matrix<double,6,6> P_;
   rclcpp::Publisher<Msg>::SharedPtr pub_, legacy_pub_; Sub yolo_,ast_,gre_;
 };

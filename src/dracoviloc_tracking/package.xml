@@ -6,10 +6,12 @@
   <maintainer email="maintainer@example.com">DracoViLoc</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>controller_manager_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>moveit_ros_planning_interface</depend>
   <depend>odas_ros_msgs</depend>
   <depend>rclcpp</depend>
+  <depend>ruckig</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>

@@ -10,8 +10,11 @@ def generate_launch_description():
         DeclareLaunchArgument('ast_enabled', default_value='false'),
         DeclareLaunchArgument('gre_enabled', default_value='false'),
         DeclareLaunchArgument('tracking_frame', default_value='table_mic_link'),
+        DeclareLaunchArgument('output_average_window', default_value='5'),
         Node(package='dracoviloc_ekf', executable='ekf_node', output='screen', parameters=[{
             'yolo_enabled': ParameterValue(LaunchConfiguration('yolo_enabled'), value_type=bool),
             'ast_enabled': ParameterValue(LaunchConfiguration('ast_enabled'), value_type=bool),
             'gre_enabled': ParameterValue(LaunchConfiguration('gre_enabled'), value_type=bool),
+            'output_average_window': ParameterValue(
+                LaunchConfiguration('output_average_window'), value_type=int),
             'tracking_frame': LaunchConfiguration('tracking_frame'), 'use_sim_time': False}])])

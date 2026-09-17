@@ -105,7 +105,9 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share):
             PythonLaunchDescriptionSource(os.path.join(ekf_share, "launch", "ekf.launch.py")),
             launch_arguments={"yolo_enabled": "true" if yolo_enabled else "false",
                               "ast_enabled": "true" if ast_enabled and audio_enabled else "false",
-                              "gre_enabled": "true" if gre_enabled and audio_enabled else "false"}.items()))
+                              "gre_enabled": "true" if gre_enabled and audio_enabled else "false",
+                              "output_average_window": LaunchConfiguration(
+                                  "ekf_average_window")}.items()))
 
     if mode != "off":
         actions.append(Node(
@@ -115,14 +117,26 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share):
                 "use_sim_time": False,
                 "smoothing_alpha": ParameterValue(
                     LaunchConfiguration("smoothing_alpha"), value_type=float),
+                "angular_deadband": ParameterValue(
+                    LaunchConfiguration("angular_deadband"), value_type=float),
+                "angular_deadband_exit": ParameterValue(
+                    LaunchConfiguration("angular_deadband_exit"), value_type=float),
                 "max_velocity": ParameterValue(
                     LaunchConfiguration("max_velocity"), value_type=float),
                 "max_acceleration": ParameterValue(
                     LaunchConfiguration("max_acceleration"), value_type=float),
+                "max_jerk": ParameterValue(
+                    LaunchConfiguration("max_jerk"), value_type=float),
+                "max_tracking_error": ParameterValue(
+                    LaunchConfiguration("max_tracking_error"), value_type=float),
                 "command_rate_hz": ParameterValue(
                     LaunchConfiguration("command_rate_hz"), value_type=float),
                 "command_horizon": ParameterValue(
                     LaunchConfiguration("command_horizon"), value_type=float),
+                "ekf_direction_log_path": LaunchConfiguration(
+                    "ekf_direction_log_path"),
+                "yolo_direction_log_path": LaunchConfiguration(
+                    "yolo_direction_log_path"),
                 "ekf_enabled": mode == "ekf",
                 "direct_classifier_source": source,
                 "direct_min_activity": ParameterValue(
@@ -221,14 +235,35 @@ def generate_launch_description():
                         "track state, for validating the model independent "
                         "of SSL/SST tuning."),
         DeclareLaunchArgument("smoothing_alpha", default_value="0.20"),
+        DeclareLaunchArgument(
+            "angular_deadband", default_value="0.08",
+            description="Pointing error that starts arm tracking, in radians."),
+        DeclareLaunchArgument(
+            "angular_deadband_exit", default_value="0.04",
+            description="Smaller pointing error that stops tracking, in radians."),
         DeclareLaunchArgument("max_velocity", default_value="0.60"),
         DeclareLaunchArgument("max_acceleration", default_value="0.80"),
         DeclareLaunchArgument(
-            "command_rate_hz", default_value="10.0",
-            description="Tracker trajectory replacement rate; 10 Hz is the physical-arm default."),
+            "max_jerk", default_value="4.0",
+            description="Maximum tracking jerk in rad/s^3."),
+        DeclareLaunchArgument(
+            "max_tracking_error", default_value="0.35",
+            description="Stop tracking if measured and generated joint positions differ by this many radians."),
+        DeclareLaunchArgument(
+            "command_rate_hz", default_value="100.0",
+            description="Jerk-limited position command rate; match controller_manager update_rate."),
         DeclareLaunchArgument(
             "command_horizon", default_value="0.20",
-            description="Duration in seconds of each tracker trajectory."),
+            description="Deprecated compatibility argument; tracking now uses online Ruckig commands."),
+        DeclareLaunchArgument(
+            "ekf_direction_log_path", default_value="",
+            description="Optional CSV file receiving every raw and filtered EKF direction."),
+        DeclareLaunchArgument(
+            "yolo_direction_log_path", default_value="",
+            description="Optional CSV file receiving every raw YOLO direction."),
+        DeclareLaunchArgument(
+            "ekf_average_window", default_value="5",
+            description="Number of accepted EKF estimates averaged before publication."),
         DeclareLaunchArgument(
             "require_home_before_tracking", default_value="true",
             description="Require /demo/home to reach the SRDF home pose before tracking can start."),
