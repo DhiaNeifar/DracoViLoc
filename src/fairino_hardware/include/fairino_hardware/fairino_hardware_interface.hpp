@@ -11,6 +11,7 @@
 #include "fairino_msgs/srv/remote_cmd_interface.hpp"
 #include "visibility_control.h"
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -76,6 +77,8 @@ public:
   double _last_position_command[12];
   bool _has_last_position_command{false};
   double _command_change_threshold{1e-6};
+  std::chrono::steady_clock::time_point _last_servoj_left{};
+  std::chrono::steady_clock::time_point _last_servoj_right{};
   int _control_mode;
   
   // Dual robot support

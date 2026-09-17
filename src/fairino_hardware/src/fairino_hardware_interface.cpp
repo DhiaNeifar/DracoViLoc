@@ -6,6 +6,8 @@ namespace {
 constexpr const char * RECOVERY_SERVICE_NAME = "/fairino_hardware/recover";
 constexpr int RECOVERY_RESET_ATTEMPTS = 3;
 constexpr auto RECOVERY_SETTLE_TIME = std::chrono::seconds(1);
+constexpr auto SERVO_COMMAND_INTERVAL = std::chrono::milliseconds(10);
+constexpr float SERVO_COMMAND_PERIOD_S = 0.010F;
 
 class RecoveryPauseGuard
 {
@@ -179,6 +181,8 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_activate(const r
         _last_position_command[i] = 0;
     }
     _has_last_position_command = false;
+    _last_servoj_left = std::chrono::steady_clock::time_point{};
+    _last_servoj_right = std::chrono::steady_clock::time_point{};
     _control_mode = 0; // Position control mode
     
     // Create and connect to left robot (or single robot)
@@ -377,6 +381,14 @@ hardware_interface::return_type FairinoHardwareInterface::write(const rclcpp::Ti
         if (!command_changed) {
             return hardware_interface::return_type::OK;
         }
+
+        const auto send_time = std::chrono::steady_clock::now();
+        const bool left_due = send_time - _last_servoj_left >= SERVO_COMMAND_INTERVAL;
+        const bool right_due = !_right_robot ||
+            send_time - _last_servoj_right >= SERVO_COMMAND_INTERVAL;
+        if (!left_due || !right_due) {
+            return hardware_interface::return_type::OK;
+        }
         
         // Prepare commands for left robot (or single robot)
         JointPos left_cmd;
@@ -386,15 +398,15 @@ hardware_interface::return_type FairinoHardwareInterface::write(const rclcpp::Ti
             left_cmd.jPos[i] = _jnt_position_command[joint_idx] / M_PI * 180.0; // Convert to degrees
         }
         
-        // Send command to left robot
-        // Using 0.040s (40ms) to match 25Hz controller update rate
-        int left_returncode = _left_robot->ServoJ(&left_cmd, &left_extcmd, 0, 0, 0.040, 0, 0);
+        // ros2_control runs at 100 Hz. Keep ServoJ cmdT and this rate limiter
+        // aligned at 10 ms to avoid filling the FAIRINO servo buffer.
+        _last_servoj_left = send_time;
+        int left_returncode = _left_robot->ServoJ(
+            &left_cmd, &left_extcmd, 0, 0, SERVO_COMMAND_PERIOD_S, 0, 0);
         if(left_returncode != 0){
-            if(left_returncode == 14){
-                RCLCPP_ERROR(rclcpp::get_logger("FairinoHardwareInterface"), "Left robot ServoJ failed with error code: %d", left_returncode);
-            } else {
-                RCLCPP_WARN(rclcpp::get_logger("FairinoHardwareInterface"), "Left robot ServoJ failed with error code: %d", left_returncode);
-            }
+            RCLCPP_ERROR(rclcpp::get_logger("FairinoHardwareInterface"),
+                "Left robot ServoJ failed with error code: %d", left_returncode);
+            return hardware_interface::return_type::ERROR;
         }
         
         // Send command to right robot if in dual-arm mode
@@ -406,15 +418,13 @@ hardware_interface::return_type FairinoHardwareInterface::write(const rclcpp::Ti
                 right_cmd.jPos[i] = _jnt_position_command[joint_idx] / M_PI * 180.0; // Convert to degrees
             }
             
-            // Send command to right robot
-            // Using 0.040s (40ms) to match 25Hz controller update rate
-            int right_returncode = _right_robot->ServoJ(&right_cmd, &right_extcmd, 0, 0, 0.040, 0, 0);
+            _last_servoj_right = send_time;
+            int right_returncode = _right_robot->ServoJ(
+                &right_cmd, &right_extcmd, 0, 0, SERVO_COMMAND_PERIOD_S, 0, 0);
             if(right_returncode != 0){
-                if(right_returncode == 14){
-                    RCLCPP_ERROR(rclcpp::get_logger("FairinoHardwareInterface"), "Right robot ServoJ failed with error code: %d", right_returncode);
-                } else {
-                    RCLCPP_WARN(rclcpp::get_logger("FairinoHardwareInterface"), "Right robot ServoJ failed with error code: %d", right_returncode);
-                }
+                RCLCPP_ERROR(rclcpp::get_logger("FairinoHardwareInterface"),
+                    "Right robot ServoJ failed with error code: %d", right_returncode);
+                return hardware_interface::return_type::ERROR;
             }
         }
 

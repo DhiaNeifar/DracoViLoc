@@ -119,10 +119,18 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share):
                     LaunchConfiguration("max_velocity"), value_type=float),
                 "max_acceleration": ParameterValue(
                     LaunchConfiguration("max_acceleration"), value_type=float),
+                "command_rate_hz": ParameterValue(
+                    LaunchConfiguration("command_rate_hz"), value_type=float),
+                "command_horizon": ParameterValue(
+                    LaunchConfiguration("command_horizon"), value_type=float),
                 "ekf_enabled": mode == "ekf",
                 "direct_classifier_source": source,
                 "direct_min_activity": ParameterValue(
                     LaunchConfiguration("min_activity"), value_type=float),
+                "require_home_before_tracking": ParameterValue(
+                    LaunchConfiguration("require_home_before_tracking"), value_type=bool),
+                "home_duration_s": ParameterValue(
+                    LaunchConfiguration("home_duration_s"), value_type=float),
             }],
             output="screen"))
     return actions
@@ -215,6 +223,18 @@ def generate_launch_description():
         DeclareLaunchArgument("smoothing_alpha", default_value="0.20"),
         DeclareLaunchArgument("max_velocity", default_value="0.60"),
         DeclareLaunchArgument("max_acceleration", default_value="0.80"),
+        DeclareLaunchArgument(
+            "command_rate_hz", default_value="10.0",
+            description="Tracker trajectory replacement rate; 10 Hz is the physical-arm default."),
+        DeclareLaunchArgument(
+            "command_horizon", default_value="0.20",
+            description="Duration in seconds of each tracker trajectory."),
+        DeclareLaunchArgument(
+            "require_home_before_tracking", default_value="true",
+            description="Require /demo/home to reach the SRDF home pose before tracking can start."),
+        DeclareLaunchArgument(
+            "home_duration_s", default_value="12.0",
+            description="Duration of the explicit SRDF home trajectory in seconds."),
         DeclareLaunchArgument("table_mic_x", default_value="0.0"),
         DeclareLaunchArgument("table_mic_y", default_value="0.0"),
         DeclareLaunchArgument("table_mic_z", default_value="0.75"),

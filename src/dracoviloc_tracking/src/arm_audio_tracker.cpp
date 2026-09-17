@@ -15,6 +15,8 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_srvs/srv/set_bool.hpp"
+#include "std_srvs/srv/trigger.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 #include "trajectory_msgs/msg/joint_trajectory.hpp"
@@ -68,9 +70,10 @@ public:
   ArmAudioTracker() : Node("arm_audio_tracker") {
     target_timeout_ = declare_parameter("target_timeout", 0.75);
     smoothing_alpha_ = declare_parameter("smoothing_alpha", 0.20);
-    angular_deadband_ = declare_parameter("angular_deadband", 0.04);
+    angular_deadband_ = declare_parameter("angular_deadband", 0.08);
     motion_penalty_ = declare_parameter("motion_penalty", 0.015);
-    command_horizon_ = declare_parameter("command_horizon", 0.25);
+    command_horizon_ = declare_parameter("command_horizon", 0.20);
+    command_rate_hz_ = declare_parameter("command_rate_hz", 10.0);
     max_velocity_ = declare_parameter("max_velocity", 0.60);
     max_acceleration_ = declare_parameter("max_acceleration", 0.80);
     world_frame_ = declare_parameter("world_frame", std::string("world"));
@@ -84,6 +87,12 @@ public:
       "direct_classifier_source", std::string("gre"));
     direct_min_activity_ = declare_parameter("direct_min_activity", 0.10);
     direct_class_timeout_ = declare_parameter("direct_class_timeout", 5.0);
+    require_home_ = declare_parameter("require_home_before_tracking", true);
+    home_duration_s_ = declare_parameter("home_duration_s", 12.0);
+    home_tolerance_rad_ = declare_parameter("home_tolerance_rad", 0.035);
+    if (command_rate_hz_ < 1.0 || command_rate_hz_ > 20.0) {
+      throw std::invalid_argument("command_rate_hz must be between 1 and 20");
+    }
     if (direct_classifier_source_ != "gre" &&
         direct_classifier_source_ != "ast" &&
         direct_classifier_source_ != "either" &&
@@ -125,8 +134,24 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         external_veto_ = !msg->data;
       });
-    timer_ = create_wall_timer(std::chrono::milliseconds(50), [this]() {update();});
-    RCLCPP_INFO(get_logger(), "Servo at 20 Hz in %s mode%s; only joint1 and joint4 move",
+    home_service_ = create_service<std_srvs::srv::Trigger>(
+      "/demo/home",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        request_home(*response);
+      });
+    tracking_service_ = create_service<std_srvs::srv::SetBool>(
+      "/demo/tracking",
+      [this](const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+             std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
+        set_tracking(request->data, *response);
+      });
+    const auto command_period = std::chrono::milliseconds(
+      static_cast<int64_t>(std::lround(1000.0 / command_rate_hz_)));
+    timer_ = create_wall_timer(command_period, [this]() {update();});
+    RCLCPP_INFO(get_logger(), "Servo at %.1f Hz in %s mode%s; tracking starts disabled. "
+      "Use /demo/home, then /demo/tracking true. Only joint1 and joint4 move",
+      command_rate_hz_,
       ekf_enabled_ ? "EKF" : "direct",
       ekf_enabled_ ? "" : (" (source=" + direct_classifier_source_ + ")").c_str());
   }
@@ -144,6 +169,125 @@ private:
   }
   static Eigen::AngleAxisd rz(double value) {
     return Eigen::AngleAxisd(value, Eigen::Vector3d::UnitZ());
+  }
+
+  bool publish_trajectory(
+    const std::array<double, 6> & target, double duration_s,
+    const std::array<double, 6> & endpoint_velocity = {})
+  {
+    if (command_pub_->get_subscription_count() == 0) {
+      RCLCPP_ERROR(get_logger(), "arm_controller command topic has no subscriber");
+      return false;
+    }
+    trajectory_msgs::msg::JointTrajectory command;
+    command.joint_names.assign(names_.begin(), names_.end());
+    trajectory_msgs::msg::JointTrajectoryPoint point;
+    point.positions.assign(target.begin(), target.end());
+    point.velocities.assign(endpoint_velocity.begin(), endpoint_velocity.end());
+    point.time_from_start = rclcpp::Duration::from_seconds(duration_s);
+    command.points.push_back(point);
+    command_pub_->publish(command);
+    return true;
+  }
+
+  bool publish_tracking_trajectory(
+    const std::array<double, 6> & start,
+    const std::array<double, 6> & target,
+    double duration_s,
+    const std::array<double, 6> & velocity)
+  {
+    if (command_pub_->get_subscription_count() == 0) {
+      RCLCPP_ERROR(get_logger(), "arm_controller command topic has no subscriber");
+      return false;
+    }
+    trajectory_msgs::msg::JointTrajectory command;
+    command.joint_names.assign(names_.begin(), names_.end());
+    trajectory_msgs::msg::JointTrajectoryPoint start_point;
+    start_point.positions.assign(start.begin(), start.end());
+    start_point.velocities.assign(velocity.begin(), velocity.end());
+    start_point.time_from_start = rclcpp::Duration::from_seconds(0.0);
+    trajectory_msgs::msg::JointTrajectoryPoint end_point;
+    end_point.positions.assign(target.begin(), target.end());
+    end_point.velocities.assign(velocity.begin(), velocity.end());
+    end_point.time_from_start = rclcpp::Duration::from_seconds(duration_s);
+    command.points.push_back(start_point);
+    command.points.push_back(end_point);
+    command_pub_->publish(command);
+    return true;
+  }
+
+  void request_home(std_srvs::srv::Trigger::Response & response)
+  {
+    std::array<double, 6> current;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!have_joints_) {
+        response.success = false;
+        response.message = "Cannot home: waiting for /joint_states";
+        return;
+      }
+      tracking_active_ = false;
+      have_direction_ = false;
+      velocities_.fill(0.0);
+      home_requested_ = true;
+      home_reached_ = false;
+      current = current_;
+    }
+    if (!publish_trajectory(home_, home_duration_s_)) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      home_requested_ = false;
+      response.success = false;
+      response.message = "Cannot home: arm_controller is unavailable";
+      return;
+    }
+    response.success = true;
+    response.message = "Home trajectory sent; wait for the tracker to report home reached";
+    RCLCPP_WARN(get_logger(), "Home requested from q=[%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
+      current[0], current[1], current[2], current[3], current[4], current[5]);
+  }
+
+  void set_tracking(bool enable, std_srvs::srv::SetBool::Response & response)
+  {
+    std::array<double, 6> hold;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (enable) {
+        if (!have_joints_) {
+          response.success = false;
+          response.message = "Cannot start tracking: waiting for /joint_states";
+          return;
+        }
+        if (require_home_ && !home_reached_) {
+          response.success = false;
+          response.message = "Cannot start tracking: call /demo/home and wait until it reaches home";
+          return;
+        }
+        if (std::abs(current_[3]) > M_PI_2) {
+          response.success = false;
+          response.message = "Cannot start tracking: joint4 is outside the tracker range";
+          return;
+        }
+        tracking_active_ = true;
+        have_direction_ = false;
+        velocities_.fill(0.0);
+        commanded_ = current_;
+        last_update_ = std::chrono::steady_clock::now();
+        response.success = true;
+        response.message = "Tracking armed; waiting for a fresh direction";
+        RCLCPP_WARN(get_logger(), "Tracking enabled; stale directions were discarded");
+        return;
+      }
+      tracking_active_ = false;
+      have_direction_ = false;
+      velocities_.fill(0.0);
+      commanded_ = current_;
+      hold = current_;
+    }
+    const bool held = publish_trajectory(hold, command_horizon_);
+    response.success = held;
+    response.message = held ? "Tracking disabled; holding current joint state" :
+      "Tracking disabled, but arm_controller is unavailable";
+    RCLCPP_WARN(get_logger(), "Tracking disabled");
   }
 
   void yolo_callback(const geometry_msgs::msg::PoseArray & msg) {
@@ -296,19 +440,43 @@ private:
     }
     std::lock_guard<std::mutex> lock(mutex_); current_ = ordered;
     if (!have_joints_) {
-      fixed_ = ordered;
-      commanded_ = ordered;
-      wrist_lookup_.reserve(160);
-      for (double q4 = -M_PI_2; q4 <= M_PI_2; q4 += 0.02) {
-        auto trial = fixed_;
-        trial[0] = 0.0;
-        trial[3] = q4;
-        wrist_lookup_.push_back({q4, microphone_normal(trial)});
-      }
-      RCLCPP_INFO(get_logger(), "Locked q2=%.3f q3=%.3f q5=%.3f q6=%.3f",
-        fixed_[1], fixed_[2], fixed_[4], fixed_[5]);
+      configure_fixed_pose(ordered);
+    }
+    if (home_requested_ && at_home(ordered)) {
+      home_requested_ = false;
+      home_reached_ = true;
+      configure_fixed_pose(ordered);
+      RCLCPP_WARN(get_logger(), "Home reached; use /demo/tracking with data: true to arm tracking");
     }
     have_joints_ = true;
+  }
+
+  bool at_home(const std::array<double, 6> & joints) const
+  {
+    for (std::size_t index = 0; index < joints.size(); ++index) {
+      if (std::abs(std::remainder(joints[index] - home_[index], 2.0 * M_PI)) >
+          home_tolerance_rad_) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void configure_fixed_pose(const std::array<double, 6> & joints)
+  {
+    fixed_ = joints;
+    commanded_ = joints;
+    velocities_.fill(0.0);
+    wrist_lookup_.clear();
+    wrist_lookup_.reserve(160);
+    for (double q4 = -M_PI_2; q4 <= M_PI_2; q4 += 0.02) {
+      auto trial = fixed_;
+      trial[0] = 0.0;
+      trial[3] = q4;
+      wrist_lookup_.push_back({q4, microphone_normal(trial)});
+    }
+    RCLCPP_INFO(get_logger(), "Locked q2=%.3f q3=%.3f q5=%.3f q6=%.3f",
+      fixed_[1], fixed_[2], fixed_[4], fixed_[5]);
   }
 
   std::array<double, 6> solve(
@@ -318,9 +486,11 @@ private:
     double best_cost = std::numeric_limits<double>::infinity();
     const double desired_yaw = std::atan2(desired.y(), desired.x());
     for (const auto & sample : wrist_lookup_) {
-      double q1 = std::remainder(
-        desired_yaw - std::atan2(sample.normal.y(), sample.normal.x()),
-        2.0 * M_PI);
+      const double raw_q1 = desired_yaw - std::atan2(sample.normal.y(), sample.normal.x());
+      // Keep the equivalent yaw nearest the measured joint position. Using
+      // the principal -pi..pi value directly creates a +/-2pi command jump
+      // when a target crosses the yaw wrap boundary.
+      double q1 = current[0] + std::remainder(raw_q1 - current[0], 2.0 * M_PI);
       q1 = std::clamp(q1, -3.0543, 3.0543);
       const Eigen::Vector3d normal = rz(q1) * sample.normal;
       const double error = angle(normal, desired);
@@ -342,8 +512,10 @@ private:
     const double dt = std::clamp(
       std::chrono::duration<double>(steady_now - last_update_).count(), 0.001, 0.15);
     last_update_ = steady_now;
-    Eigen::Vector3d desired; std::array<double, 6> reference;
+    Eigen::Vector3d desired;
+    std::array<double, 6> actual;
     bool target_available = false;
+    bool tracking_active = false;
     bool external_veto = false;
     bool have_direction = false;
     double target_age = std::numeric_limits<double>::infinity();
@@ -354,42 +526,43 @@ private:
       // publishing when it has nothing to report, so an old message is the
       // only signal that the target is gone.
       external_veto = external_veto_;
+      tracking_active = tracking_active_;
       have_direction = have_direction_;
       if (have_direction_) {
         target_age = (stamp - last_target_).seconds();
       }
-      target_available = !external_veto && have_direction && target_age <= target_timeout_;
-      desired = filtered_direction_; reference = commanded_;
+      target_available = tracking_active && !external_veto && have_direction &&
+        target_age <= target_timeout_;
+      desired = filtered_direction_;
+      actual = current_;
     }
+    if (!tracking_active) {return;}
     if (command_pub_->get_subscription_count() == 0) {return;}
-    auto target = reference;
+    auto target = actual;
     const double pointing_error = have_direction ?
-      angle(microphone_normal(reference), desired) : 0.0;
+      angle(microphone_normal(actual), desired) : 0.0;
     if (target_available && pointing_error >= angular_deadband_) {
-      target = solve(reference, desired);
+      target = solve(actual, desired);
     }
     const double solution_error = have_direction ?
       angle(microphone_normal(target), desired) : 0.0;
     for (const std::size_t index : {std::size_t(0), std::size_t(3)}) {
-      double error = target[index] - commanded_[index];
+      const double error = index == 0 ?
+        std::remainder(target[index] - actual[index], 2.0 * M_PI) :
+        target[index] - actual[index];
       const double requested_velocity = target_available ?
         std::clamp(error / command_horizon_, -max_velocity_, max_velocity_) : 0.0;
       const double velocity_change = std::clamp(
         requested_velocity - velocities_[index],
         -max_acceleration_ * dt, max_acceleration_ * dt);
       velocities_[index] += velocity_change;
-      commanded_[index] += velocities_[index] * dt;
+      commanded_[index] = actual[index] + velocities_[index] * dt;
     }
     commanded_[0] = std::clamp(commanded_[0], -3.0543, 3.0543);
     commanded_[3] = std::clamp(commanded_[3], -M_PI_2, M_PI_2);
     commanded_[1] = fixed_[1]; commanded_[2] = fixed_[2];
     commanded_[4] = fixed_[4]; commanded_[5] = fixed_[5];
-    trajectory_msgs::msg::JointTrajectory command;
-    command.joint_names.assign(names_.begin(), names_.end());
-    trajectory_msgs::msg::JointTrajectoryPoint point;
-    point.positions.assign(commanded_.begin(), commanded_.end());
-    point.time_from_start = rclcpp::Duration::from_seconds(command_horizon_);
-    command.points.push_back(point); command_pub_->publish(command);
+    publish_tracking_trajectory(actual, commanded_, command_horizon_, velocities_);
     const char * state = target_available ?
       (pointing_error < angular_deadband_ ? "reached/deadband" : "tracking") :
       (external_veto ? "hold/veto" :
@@ -413,6 +586,8 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr ast_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr gre_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr valid_sub_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr home_service_;
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr tracking_service_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp::TimerBase::SharedPtr timer_; mutable std::mutex mutex_;
@@ -422,15 +597,20 @@ private:
   Eigen::Vector3d filtered_direction_{Eigen::Vector3d::UnitX()};
   rclcpp::Time last_target_{0, 0, RCL_ROS_TIME};
   bool have_joints_{false}, external_veto_{false}, have_direction_{false};
+  bool tracking_active_{false}, home_requested_{false}, home_reached_{false};
   bool ekf_enabled_{true};
   Verdict ast_verdict_{false, 0.0, rclcpp::Time(0, 0, RCL_ROS_TIME)};
   Verdict gre_verdict_{false, 0.0, rclcpp::Time(0, 0, RCL_ROS_TIME)};
   bool have_ast_verdict_{false}, have_gre_verdict_{false};
   double target_timeout_, smoothing_alpha_, angular_deadband_, motion_penalty_;
-  double command_horizon_, max_velocity_, max_acceleration_;
+  double command_horizon_, command_rate_hz_, max_velocity_, max_acceleration_;
   double direct_min_activity_, direct_class_timeout_;
+  bool require_home_;
+  double home_duration_s_, home_tolerance_rad_;
   std::string world_frame_, tracking_frame_;
   std::string direct_classifier_source_;
+  const std::array<double, 6> home_{
+    M_PI / 2.0, -M_PI / 2.0, -M_PI / 2.0, 0.0, M_PI / 2.0, 0.0};
 };
 
 int main(int argc, char ** argv) {
