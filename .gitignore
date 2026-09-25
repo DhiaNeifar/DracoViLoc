@@ -91,6 +91,7 @@ __pycache__/
 
 # Runtime recordings.
 /runs/
+/recordings/
 
 # Isaac ROS deployment artifacts.
 !isaac_ros/media/
