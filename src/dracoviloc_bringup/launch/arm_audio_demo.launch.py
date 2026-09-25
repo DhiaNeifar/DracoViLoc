@@ -2,7 +2,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -14,14 +14,23 @@ def _enabled(context, name):
     return LaunchConfiguration(name).perform(context).lower() in ("1", "true", "yes", "on")
 
 
-def _configure_pipeline(context, ast_share, gre_share, ekf_share):
+def _configure_pipeline(context, ast_share, gre_share, ekf_share, mobilenetv2_share):
     mode = LaunchConfiguration("tracking_mode").perform(context)
     audio_enabled = _enabled(context, "audio_enabled")
     yolo_enabled = _enabled(context, "yolo_enabled")
     fusion_enabled = _enabled(context, "fusion_enabled")
     ast_enabled = _enabled(context, "ast_enabled")
     gre_enabled = _enabled(context, "gre_enabled")
+    mobilenetv2_enabled = _enabled(context, "mobilenetv2_enabled")
+    mobilenetv2_ekf_enabled = _enabled(context, "mobilenetv2_ekf_enabled")
     recording_enabled = _enabled(context, "recording_enabled")
+
+    if mobilenetv2_enabled and not audio_enabled:
+        raise RuntimeError("mobilenetv2_enabled requires audio_enabled:=true")
+    if mobilenetv2_ekf_enabled and not (mobilenetv2_enabled and fusion_enabled):
+        raise RuntimeError(
+            "mobilenetv2_ekf_enabled requires mobilenetv2_enabled:=true "
+            "and fusion_enabled:=true")
 
     if recording_enabled and not (audio_enabled or yolo_enabled):
         raise RuntimeError(
@@ -39,6 +48,9 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share):
                 raise RuntimeError(f"tracking_mode={mode} requires ast_enabled:=true")
             if source == "gre" and not gre_enabled:
                 raise RuntimeError(f"tracking_mode={mode} requires gre_enabled:=true")
+            if source == "mobilenetv2" and not mobilenetv2_enabled:
+                raise RuntimeError(
+                    "tracking_mode=direct_mobilenetv2 requires mobilenetv2_enabled:=true")
             if source == "either" and not (ast_enabled or gre_enabled):
                 raise RuntimeError(f"tracking_mode={mode} requires AST or GRE to be enabled")
     elif mode == "ekf":
@@ -88,24 +100,49 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share):
             parameters=[{"use_sim_time": False}]))
 
     if ast_enabled and audio_enabled:
-        actions.append(IncludeLaunchDescription(
+        actions.append(GroupAction(scoped=True, actions=[IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
                 ast_share, "launch", "ast.launch.py")),
             launch_arguments={
                 "threshold": LaunchConfiguration("ast_threshold"),
                 "min_activity": LaunchConfiguration("min_activity"),
                 "always_classify": LaunchConfiguration("always_classify"),
-            }.items()))
+            }.items())]))
     if gre_enabled and audio_enabled:
-        actions.append(IncludeLaunchDescription(
+        actions.append(GroupAction(scoped=True, actions=[IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(gre_share, "launch", "gre.launch.py")),
-            launch_arguments={"min_activity": LaunchConfiguration("min_activity")}.items()))
+            launch_arguments={"min_activity": LaunchConfiguration("min_activity")}.items())]))
+    if mobilenetv2_enabled:
+        mobile_arguments = {
+            "min_activity": LaunchConfiguration("min_activity"),
+            "always_classify": LaunchConfiguration("always_classify"),
+            "threshold": LaunchConfiguration("mobilenetv2_threshold"),
+            "votes_required": LaunchConfiguration("mobilenetv2_votes_required"),
+            "vote_window": LaunchConfiguration("mobilenetv2_vote_window"),
+        }
+        for name in ("engine_path", "venv_python"):
+            value = LaunchConfiguration("mobilenetv2_" + name).perform(context)
+            if value:
+                mobile_arguments[name] = value
+        actions.append(GroupAction(scoped=True, actions=[IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(
+                mobilenetv2_share, "launch", "mobilenetv2.launch.py")),
+            launch_arguments=mobile_arguments.items())]))
     if fusion_enabled:
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(ekf_share, "launch", "ekf.launch.py")),
             launch_arguments={"yolo_enabled": "true" if yolo_enabled else "false",
                               "ast_enabled": "true" if ast_enabled and audio_enabled else "false",
                               "gre_enabled": "true" if gre_enabled and audio_enabled else "false",
+                              "mobilenetv2_ekf_enabled": "true" if mobilenetv2_ekf_enabled else "false",
+                              "process_noise": LaunchConfiguration("ekf_process_noise"),
+                              "measurement_noise": LaunchConfiguration(
+                                  "ekf_measurement_noise"),
+                              "yolo_measurement_noise": LaunchConfiguration(
+                                  "ekf_yolo_measurement_noise"),
+                              "mobilenetv2_measurement_noise": LaunchConfiguration(
+                                  "ekf_mobilenetv2_measurement_noise"),
+                              "innovation_gate": LaunchConfiguration("ekf_innovation_gate"),
                               "output_average_window": LaunchConfiguration(
                                   "ekf_average_window")}.items()))
 
@@ -160,6 +197,7 @@ def generate_launch_description():
     ast_share = get_package_share_directory("dracoviloc_ast")
     gre_share = get_package_share_directory("dracoviloc_gre")
     ekf_share = get_package_share_directory("dracoviloc_ekf")
+    mobilenetv2_share = get_package_share_directory("dracoviloc_mobilenetv2")
 
     arm_demo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -192,17 +230,30 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "tracking_mode", default_value="off",
             choices=["off", "direct_gre", "direct_ast", "direct_either",
-                     "direct_yolo", "ekf"],
+                     "direct_yolo", "direct_mobilenetv2", "ekf"],
             description="Arm target source and filtering mode."),
         DeclareLaunchArgument(
             "fusion_enabled", default_value="false",
             description="Launch dracoviloc_ekf using the enabled detector sources."),
         DeclareLaunchArgument(
-            "ast_enabled", default_value="true",
+            "ast_enabled", default_value="false",
             description="Launch the independent AST classifier package."),
         DeclareLaunchArgument(
             "gre_enabled", default_value="false",
             description="Launch the independent GRE classifier package."),
+        DeclareLaunchArgument(
+            "mobilenetv2_enabled", default_value="false",
+            description="Launch the laptop-compatible MobileNetV2 audio classifier."),
+        DeclareLaunchArgument(
+            "mobilenetv2_ekf_enabled", default_value="false",
+            description="Include MobileNetV2 directions in the EKF."),
+        DeclareLaunchArgument("mobilenetv2_threshold", default_value="0.75"),
+        DeclareLaunchArgument("mobilenetv2_votes_required", default_value="2"),
+        DeclareLaunchArgument("mobilenetv2_vote_window", default_value="2"),
+        DeclareLaunchArgument("mobilenetv2_engine_path", default_value=""),
+        DeclareLaunchArgument(
+            "mobilenetv2_venv_python", default_value="",
+            description="Python interpreter with TensorRT and PyCUDA installed."),
         DeclareLaunchArgument(
             "yolo_enabled", default_value="false",
             description="Consume externally published YOLO directions in "
@@ -262,6 +313,21 @@ def generate_launch_description():
             "yolo_direction_log_path", default_value="",
             description="Optional CSV file receiving every raw YOLO direction."),
         DeclareLaunchArgument(
+            "ekf_process_noise", default_value="0.05",
+            description="EKF process-noise covariance."),
+        DeclareLaunchArgument(
+            "ekf_measurement_noise", default_value="0.02",
+            description="Fallback EKF direction measurement-noise covariance."),
+        DeclareLaunchArgument(
+            "ekf_yolo_measurement_noise", default_value="0.03",
+            description="YOLO direction measurement-noise covariance."),
+        DeclareLaunchArgument(
+            "ekf_mobilenetv2_measurement_noise", default_value="0.15",
+            description="MobileNetV2/ODAS direction measurement-noise covariance."),
+        DeclareLaunchArgument(
+            "ekf_innovation_gate", default_value="11.34",
+            description="EKF squared Mahalanobis innovation gate."),
+        DeclareLaunchArgument(
             "ekf_average_window", default_value="5",
             description="Number of accepted EKF estimates averaged before publication."),
         DeclareLaunchArgument(
@@ -281,5 +347,5 @@ def generate_launch_description():
         OpaqueFunction(
             function=_configure_pipeline,
             kwargs={"ast_share": ast_share, "gre_share": gre_share,
-                    "ekf_share": ekf_share}),
+                    "ekf_share": ekf_share, "mobilenetv2_share": mobilenetv2_share}),
     ])

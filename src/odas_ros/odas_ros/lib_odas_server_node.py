@@ -150,6 +150,7 @@ class PairCoordinator:
                  max_pending_pairs: int = MAX_PENDING_PAIRS,
                  sst_timeout: float = SST_TIMEOUT,
                  clock: Callable[[], float] = time.monotonic,
+                 stamp_clock: Callable[[], float] = time.time,
                  log_info: Callable[[str], None] = lambda msg: None,
                  log_warn: Callable[[str], None] = lambda msg: None,
                  log_error: Callable[[str], None] = lambda msg: None):
@@ -164,6 +165,7 @@ class PairCoordinator:
         self._max_pending_pairs = max_pending_pairs
         self._sst_timeout = sst_timeout
         self._clock = clock
+        self._stamp_clock = stamp_clock
         self._log_info = log_info
         self._log_warn = log_warn
         self._log_error = log_error
@@ -387,7 +389,9 @@ class PairCoordinator:
         self._consecutive_violations = 0
 
         if self._session_epoch is None:
-            self._session_epoch = max(sss_recv_time, sst_recv_time)
+            # Receive times are monotonic values used only for timeout/skew
+            # calculations. ROS headers must use the node's ROS clock domain.
+            self._session_epoch = self._stamp_clock() - (ordinal - 1) * self._hop_duration
             self._log_info(
                 'First paired SSS/SST frame: ordinal {} pairs SSS frame 1 with SST baseline {} '
                 '(session generation {}, {} fixed slots, session epoch {:.6f})'.format(
@@ -885,6 +889,7 @@ class OdasServerNode(rclpy.node.Node):
         return PairCoordinator(
             slot_count=slot_count,
             hop_duration=hop_duration,
+            stamp_clock=lambda: self.get_clock().now().nanoseconds * 1e-9,
             log_info=logger.info,
             log_warn=logger.warning,
             log_error=logger.error)

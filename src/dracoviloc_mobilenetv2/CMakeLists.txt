@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.8)
+project(dracoviloc_mobilenetv2)
+find_package(ament_cmake REQUIRED)
+get_filename_component(MOBILENETV2_MODEL_DIR
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../models/mobilenetv2" ABSOLUTE)
+configure_file(launch/model_paths.json.in model_paths.json @ONLY)
+install(DIRECTORY mobilenetv2 DESTINATION share/${PROJECT_NAME})
+install(FILES launch/mobilenetv2.launch.py "${CMAKE_CURRENT_BINARY_DIR}/model_paths.json"
+  DESTINATION share/${PROJECT_NAME}/launch)
+install(FILES README.md DESTINATION share/${PROJECT_NAME})
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_processing test/test_processing.py)
+  ament_add_pytest_test(test_node test/test_node.py)
+  ament_add_pytest_test(test_launch test/test_launch.py)
+endif()
+ament_package()
