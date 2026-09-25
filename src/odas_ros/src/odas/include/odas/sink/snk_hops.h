@@ -41,6 +41,7 @@
     #include "../general/interface.h"
     #include "../message/msg_hops.h"
     #include "../utils/pcm.h"
+    #include "../utils/socket.h"
 
     typedef struct snk_hops_obj {
 

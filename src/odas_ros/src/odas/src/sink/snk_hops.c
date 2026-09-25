@@ -315,7 +315,7 @@
 
     void snk_hops_process_interface_socket(snk_hops_obj * obj) {
 
-        if (send(obj->sid, obj->buffer, obj->bufferSize, 0) < 0) {
+        if (socket_send_all(obj->sid, obj->buffer, obj->bufferSize) != 0) {
             printf("Sink hops: Could not send message.\n");
             exit(EXIT_FAILURE);
         }

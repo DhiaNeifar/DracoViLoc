@@ -40,6 +40,7 @@
     #include "../general/format.h"
     #include "../general/interface.h"
     #include "../message/msg_pots.h"
+    #include "../utils/socket.h"
 
     typedef struct snk_pots_obj {
 

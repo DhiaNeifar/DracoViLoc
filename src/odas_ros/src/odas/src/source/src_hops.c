@@ -482,20 +482,54 @@ int src_hops_process_interface_file(src_hops_obj * obj) {
 
 int src_hops_process_interface_soundcard(src_hops_obj * obj) {
 
-    unsigned int nSamples;
+    unsigned int nChannels;
+    unsigned int bytesPerSample;
+    unsigned int nBytesPerHop;
+    snd_pcm_sframes_t framesCaptured;
+    snd_pcm_sframes_t framesRead;
     int rtnValue;
-    int err;
 
-    if (err = snd_pcm_readi(obj->ch, obj->buffer, obj->hopSize) > 0) {
+    nChannels = obj->nChannels;
 
-        rtnValue = 0;
-        
+    nBytesPerHop = obj->hopSize * nChannels;
+
+    if ((nBytesPerHop == 0) ||
+        (obj->bufferSize % nBytesPerHop != 0)) {
+
+        printf("Source hops: Buffer size is not an exact multiple of the hop size.\n");
+        exit(EXIT_FAILURE);
+
     }
-    else {
 
-        rtnValue = -1;
-    
+    bytesPerSample = obj->bufferSize / nBytesPerHop;
+
+    framesCaptured = 0;
+
+    while (framesCaptured < (snd_pcm_sframes_t) obj->hopSize) {
+
+        framesRead = snd_pcm_readi(obj->ch,
+                                   &(obj->buffer[framesCaptured * nChannels * bytesPerSample]),
+                                   obj->hopSize - framesCaptured);
+
+        if (framesRead > 0) {
+
+            framesCaptured += framesRead;
+
+        }
+        else {
+
+            // A zero or negative return is a failure; the partial buffer is
+            // not processed.
+
+            rtnValue = -1;
+
+            return rtnValue;
+
+        }
+
     }
+
+    rtnValue = 0;
 
     return rtnValue;
 }

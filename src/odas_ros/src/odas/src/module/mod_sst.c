@@ -977,7 +977,8 @@
 
                             for (iTrackMax = 0; iTrackMax < obj->nTracksMax; iTrackMax++) {
 
-                                if (obj->ids[iTrackMax] == 0) {
+                                if ((obj->ids[iTrackMax] == 0) &&
+                                    (obj->idsAdded[iTrackMax] == 0)) {
 
                                     obj->id++;
                                     obj->idsAdded[iTrackMax] = obj->id;
