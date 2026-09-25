@@ -5,7 +5,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -14,7 +14,7 @@ def _enabled(context, name):
     return LaunchConfiguration(name).perform(context).lower() in ("1", "true", "yes", "on")
 
 
-def _configure_pipeline(context, ast_share, gre_share, ekf_share):
+def _configure_pipeline(context, ast_share, gre_share, ekf_share, recording_share):
     mode = LaunchConfiguration("tracking_mode").perform(context)
     audio_enabled = _enabled(context, "audio_enabled")
     yolo_enabled = _enabled(context, "yolo_enabled")
@@ -22,6 +22,7 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share):
     ast_enabled = _enabled(context, "ast_enabled")
     gre_enabled = _enabled(context, "gre_enabled")
     recording_enabled = _enabled(context, "recording_enabled")
+    sss_channels_recording = _enabled(context, "sss_channels_recording")
 
     if recording_enabled and not (audio_enabled or yolo_enabled):
         raise RuntimeError(
@@ -70,6 +71,15 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share):
                 "video_crf": ParameterValue(
                     LaunchConfiguration("recording_crf"), value_type=int),
             }]))
+    if sss_channels_recording and audio_enabled:
+        actions.append(IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(
+                recording_share, "launch", "sss_channels.launch.py")),
+            launch_arguments={
+                "audio_topic": LaunchConfiguration("recording_audio_topic"),
+                "output_root": LaunchConfiguration("sss_channels_root"),
+                "gain_db": LaunchConfiguration("sss_channels_gain_db"),
+            }.items()))
     if audio_enabled or yolo_enabled:
         actions.append(Node(
             package="tf2_ros",
@@ -92,6 +102,12 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share):
             PythonLaunchDescriptionSource(os.path.join(
                 ast_share, "launch", "ast.launch.py")),
             launch_arguments={
+                "venv_python": PathJoinSubstitution(
+                    [EnvironmentVariable("HOME"), "DracoViLoc", "trt_env", "bin", "python3"]),
+                "model_dir": PathJoinSubstitution(
+                    [EnvironmentVariable("HOME"), "DracoViLoc", "models", "ast"]),
+                "engine_path": PathJoinSubstitution(
+                    [EnvironmentVariable("HOME"), "DracoViLoc", "models", "ast", "drone_ast.engine"]),
                 "threshold": LaunchConfiguration("ast_threshold"),
                 "min_activity": LaunchConfiguration("min_activity"),
                 "always_classify": LaunchConfiguration("always_classify"),
@@ -99,7 +115,15 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share):
     if gre_enabled and audio_enabled:
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(gre_share, "launch", "gre.launch.py")),
-            launch_arguments={"min_activity": LaunchConfiguration("min_activity")}.items()))
+            launch_arguments={
+                "venv_python": PathJoinSubstitution(
+                    [EnvironmentVariable("HOME"), "DracoViLoc", "gre_env", "bin", "python3"]),
+                "engine_path": PathJoinSubstitution(
+                    [EnvironmentVariable("HOME"), "DracoViLoc", "models", "gre", "model_logmel.engine"]),
+                "meta_path": PathJoinSubstitution(
+                    [EnvironmentVariable("HOME"), "DracoViLoc", "models", "gre", "model_logmel_meta.json"]),
+                "min_activity": LaunchConfiguration("min_activity"),
+            }.items()))
     if fusion_enabled:
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(ekf_share, "launch", "ekf.launch.py")),
@@ -160,6 +184,7 @@ def generate_launch_description():
     ast_share = get_package_share_directory("dracoviloc_ast")
     gre_share = get_package_share_directory("dracoviloc_gre")
     ekf_share = get_package_share_directory("dracoviloc_ekf")
+    recording_share = get_package_share_directory("dracoviloc_recording")
 
     arm_demo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -222,6 +247,19 @@ def generate_launch_description():
         DeclareLaunchArgument("recording_fps", default_value="15.0"),
         DeclareLaunchArgument("recording_crf", default_value="23"),
         DeclareLaunchArgument(
+            "sss_channels_recording", default_value="false",
+            description="Record /sss into one WAV file per channel under "
+                        "sss_channels_root (requires audio_enabled)."),
+        DeclareLaunchArgument(
+            "sss_channels_root",
+            default_value=PathJoinSubstitution(
+                [EnvironmentVariable("HOME"), "DracoViLoc", "recordings"])),
+        DeclareLaunchArgument(
+            "sss_channels_gain_db", default_value="0.0",
+            description="Digital gain in dB for the per-channel WAV recorder; "
+                        "e.g. 24.0 makes quiet /sss sources loud (with clipping "
+                        "at 0 dBFS if overdone)."),
+        DeclareLaunchArgument(
             "ast_threshold", default_value="0.20",
             description="AST drone-probability threshold."),
         DeclareLaunchArgument(
@@ -281,5 +319,5 @@ def generate_launch_description():
         OpaqueFunction(
             function=_configure_pipeline,
             kwargs={"ast_share": ast_share, "gre_share": gre_share,
-                    "ekf_share": ekf_share}),
+                    "ekf_share": ekf_share, "recording_share": recording_share}),
     ])
