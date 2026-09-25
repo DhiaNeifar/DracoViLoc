@@ -18,6 +18,13 @@ ament_target_dependencies(multimodal_recorder
   rclcpp
   sensor_msgs)
 
-install(TARGETS multimodal_recorder DESTINATION lib/${PROJECT_NAME})
+add_executable(sss_channel_recorder src/sss_channel_recorder.cpp)
+ament_target_dependencies(sss_channel_recorder
+  audio_utils_msgs
+  rclcpp)
+
+install(TARGETS multimodal_recorder sss_channel_recorder DESTINATION lib/${PROJECT_NAME})
+
+install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
 
 ament_package()
