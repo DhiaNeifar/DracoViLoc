@@ -325,7 +325,7 @@
 
     void snk_tracks_process_interface_socket(snk_tracks_obj * obj) {
 
-        if (send(obj->sid, obj->buffer, obj->bufferSize, 0) < 0) {
+        if (socket_send_all(obj->sid, obj->buffer, obj->bufferSize) != 0) {
             printf("Sink tracks: Could not send message.\n");
             exit(EXIT_FAILURE);
         }  

@@ -40,6 +40,7 @@
     #include "../general/format.h"
     #include "../general/interface.h"
     #include "../message/msg_tracks.h"
+    #include "../utils/socket.h"
 
     typedef struct snk_tracks_obj {
 

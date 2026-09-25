@@ -129,6 +129,10 @@ class OdasVisualizationNode(rclpy.node.Node):
         self._sst_input_PoseArray.poses = []
 
         for src in sst.sources:
+            # Fixed-slot schema: id == 0 marks an empty slot. Skip it so RViz
+            # does not render phantom arrows (x/y/z are zero-filled garbage).
+            if src.id == 0:
+                continue
             q = self._unit_vector_to_quaternion(src.x, src.y, src.z)
 
             # Update the SST PoseStamped

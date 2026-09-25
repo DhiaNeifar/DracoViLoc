@@ -125,6 +125,7 @@ set(SRC
     src/utils/matrix.c
     src/utils/pcm.c
     src/utils/random.c
+    src/utils/socket.c
     src/utils/transcendental.c
 
     src/aconnector/acon_categories.c
@@ -249,4 +250,41 @@ endif()
 if(ODAS_FORCE_BIN_AND_LIB_DIRS)
     unset(CMAKE_RUNTIME_OUTPUT_DIRECTORY)
     unset(CMAKE_LIBRARY_OUTPUT_DIRECTORY)
+endif()
+
+if(BUILD_TESTING)
+
+    enable_testing()
+
+    # The odas library is linked as a shared library, so link-time wrapping
+    # cannot intercept its internal calls. The unit under test is therefore
+    # compiled directly into each test executable, where --wrap applies.
+
+    add_executable(test_src_hops
+        test/test_src_hops.c
+        src/source/src_hops.c
+    )
+    target_include_directories(test_src_hops PRIVATE
+        "${PROJECT_SOURCE_DIR}/include/odas"
+    )
+    target_link_libraries(test_src_hops PRIVATE
+        odas
+    )
+    target_link_options(test_src_hops PRIVATE
+        -Wl,--wrap=snd_pcm_readi
+    )
+    add_test(NAME test_src_hops COMMAND test_src_hops)
+
+    add_executable(test_socket
+        test/test_socket.c
+        src/utils/socket.c
+    )
+    target_include_directories(test_socket PRIVATE
+        "${PROJECT_SOURCE_DIR}/include/odas"
+    )
+    target_link_options(test_socket PRIVATE
+        -Wl,--wrap=send
+    )
+    add_test(NAME test_socket COMMAND test_socket)
+
 endif()
