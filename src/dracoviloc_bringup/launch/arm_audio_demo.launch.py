@@ -14,11 +14,8 @@ def _enabled(context, name):
     return LaunchConfiguration(name).perform(context).lower() in ("1", "true", "yes", "on")
 
 
-<<<<<<< HEAD
-def _configure_pipeline(context, ast_share, gre_share, ekf_share, recording_share):
-=======
-def _configure_pipeline(context, ast_share, gre_share, ekf_share, mobilenetv2_share):
->>>>>>> backup-hachem
+def _configure_pipeline(context, ast_share, gre_share, ekf_share,
+                        recording_share, mobilenetv2_share):
     mode = LaunchConfiguration("tracking_mode").perform(context)
     audio_enabled = _enabled(context, "audio_enabled")
     yolo_enabled = _enabled(context, "yolo_enabled")
@@ -131,7 +128,6 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share, mobilenetv2_sh
     if gre_enabled and audio_enabled:
         actions.append(GroupAction(scoped=True, actions=[IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(gre_share, "launch", "gre.launch.py")),
-<<<<<<< HEAD
             launch_arguments={
                 "venv_python": PathJoinSubstitution(
                     [EnvironmentVariable("HOME"), "DracoViLoc", "gre_env", "bin", "python3"]),
@@ -140,9 +136,7 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share, mobilenetv2_sh
                 "meta_path": PathJoinSubstitution(
                     [EnvironmentVariable("HOME"), "DracoViLoc", "models", "gre", "model_logmel_meta.json"]),
                 "min_activity": LaunchConfiguration("min_activity"),
-            }.items()))
-=======
-            launch_arguments={"min_activity": LaunchConfiguration("min_activity")}.items())]))
+            }.items())]))
     if mobilenetv2_enabled:
         mobile_arguments = {
             "min_activity": LaunchConfiguration("min_activity"),
@@ -159,7 +153,6 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share, mobilenetv2_sh
             PythonLaunchDescriptionSource(os.path.join(
                 mobilenetv2_share, "launch", "mobilenetv2.launch.py")),
             launch_arguments=mobile_arguments.items())]))
->>>>>>> backup-hachem
     if fusion_enabled:
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(ekf_share, "launch", "ekf.launch.py")),
@@ -229,11 +222,8 @@ def generate_launch_description():
     ast_share = get_package_share_directory("dracoviloc_ast")
     gre_share = get_package_share_directory("dracoviloc_gre")
     ekf_share = get_package_share_directory("dracoviloc_ekf")
-<<<<<<< HEAD
     recording_share = get_package_share_directory("dracoviloc_recording")
-=======
     mobilenetv2_share = get_package_share_directory("dracoviloc_mobilenetv2")
->>>>>>> backup-hachem
 
     arm_demo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -396,9 +386,6 @@ def generate_launch_description():
         OpaqueFunction(
             function=_configure_pipeline,
             kwargs={"ast_share": ast_share, "gre_share": gre_share,
-<<<<<<< HEAD
-                    "ekf_share": ekf_share, "recording_share": recording_share}),
-=======
-                    "ekf_share": ekf_share, "mobilenetv2_share": mobilenetv2_share}),
->>>>>>> backup-hachem
+                    "ekf_share": ekf_share, "recording_share": recording_share,
+                    "mobilenetv2_share": mobilenetv2_share}),
     ])
