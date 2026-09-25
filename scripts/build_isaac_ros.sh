@@ -9,7 +9,13 @@ if [[ ! -d "${isaac_ws}/src/isaac_ros_common" ]]; then
 fi
 
 cd "${isaac_ws}"
+# The bind-mounted host checkout is owned by the host user, while this build
+# runs as the container user. Isaac ROS package introspection invokes Git.
+git config --global --add safe.directory "${isaac_ws}"
+# ROS Humble's setup script reads optional environment variables that may be unset.
+set +u
 source /opt/ros/humble/setup.bash
+set -u
 
 colcon build \
   --base-paths src \

@@ -21,18 +21,28 @@ public:
     }
     pub_ = create_publisher<Msg>("/ekf/direction", 10);
     legacy_pub_ = create_publisher<Msg>("/ekf_fused_target_pose", 10);
-    add_source("yolo_enabled", "/yolo/direction", yolo_);
-    add_source("ast_enabled", "/ast/direction", ast_);
-    add_source("gre_enabled", "/gre/direction", gre_);
+    add_source("yolo_enabled", "/yolo/direction", "yolo_measurement_noise", yolo_);
+    add_source("ast_enabled", "/ast/direction", "ast_measurement_noise", ast_);
+    add_source("gre_enabled", "/gre/direction", "gre_measurement_noise", gre_);
+    add_source(
+      "mobilenetv2_ekf_enabled", "/mobilenetv2/direction",
+      "mobilenetv2_measurement_noise", mobilenetv2_);
     x_.setZero(); P_.setIdentity(); P_ *= 0.5;
   }
 private:
   using Msg = geometry_msgs::msg::Vector3Stamped;
   using Sub = rclcpp::Subscription<Msg>::SharedPtr;
-  void add_source(const char * parameter, const char * topic, Sub & sub) {
+  void add_source(
+    const char * parameter, const char * topic, const char * noise_parameter, Sub & sub)
+  {
+    const double configured_noise = declare_parameter(noise_parameter, -1.0);
+    const double source_noise = configured_noise > 0.0 ? configured_noise : r_;
     if (!declare_parameter(parameter, false)) return;
-    sub = create_subscription<Msg>(topic, 10, [this, topic](Msg::SharedPtr m) { update(*m, topic); });
-    RCLCPP_INFO(get_logger(), "listening to %s", topic);
+    sub = create_subscription<Msg>(
+      topic, 10,
+      [this, topic, source_noise](Msg::SharedPtr m) { update(*m, topic, source_noise); });
+    RCLCPP_INFO(
+      get_logger(), "listening to %s (measurement_noise=%.4f)", topic, source_noise);
   }
   void predict(double t) {
     if (!ready_) return;
@@ -40,9 +50,11 @@ private:
     Eigen::Matrix<double,6,6> F = Eigen::Matrix<double,6,6>::Identity();
     F.block<3,3>(0,3) = Eigen::Matrix3d::Identity() * dt;
     x_ = F * x_; P_ = F * P_ * F.transpose() + Eigen::Matrix<double,6,6>::Identity() * q_ * dt;
-    last_t_ = t;
+    // Sensor callbacks can be interleaved and their header timestamps need not
+    // arrive in order. Never move the filter clock backwards.
+    last_t_ = std::max(last_t_, t);
   }
-  void update(const Msg & msg, const char * source) {
+  void update(const Msg & msg, const char * source, double measurement_noise) {
     Eigen::Vector3d z(msg.vector.x, msg.vector.y, msg.vector.z);
     if (z.norm() < 1e-6) return;
     z.normalize();
@@ -50,7 +62,7 @@ private:
     if (!ready_) { x_.head<3>() = z; last_t_ = t; ready_ = true; publish(msg.header.stamp); return; }
     predict(t);
     Eigen::Matrix<double,3,6> H = Eigen::Matrix<double,3,6>::Zero(); H.block<3,3>(0,0).setIdentity();
-    const Eigen::Matrix3d R = Eigen::Matrix3d::Identity() * r_;
+    const Eigen::Matrix3d R = Eigen::Matrix3d::Identity() * measurement_noise;
     const Eigen::Vector3d innovation = z - H*x_;
     const Eigen::Matrix3d S = H*P_*H.transpose()+R;
     const double nis = innovation.transpose()*S.inverse()*innovation;
@@ -80,6 +92,6 @@ private:
   int output_average_window_{5};
   std::deque<Eigen::Vector3d> output_history_;
   Eigen::Matrix<double,6,1> x_; Eigen::Matrix<double,6,6> P_;
-  rclcpp::Publisher<Msg>::SharedPtr pub_, legacy_pub_; Sub yolo_,ast_,gre_;
+  rclcpp::Publisher<Msg>::SharedPtr pub_, legacy_pub_; Sub yolo_,ast_,gre_,mobilenetv2_;
 };
 int main(int argc,char **argv){rclcpp::init(argc,argv);rclcpp::spin(std::make_shared<DirectionEkf>());rclcpp::shutdown();}

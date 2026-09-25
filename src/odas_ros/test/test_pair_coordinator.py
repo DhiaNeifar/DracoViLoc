@@ -45,6 +45,7 @@ def make_coordinator(**overrides):
     kwargs = {
         'slot_count': SLOT_COUNT,
         'hop_duration': HOP_DURATION,
+        'stamp_clock': lambda: 1234.5,
         'log_info': recorder.info,
         'log_warn': recorder.warning,
         'log_error': recorder.error,
@@ -95,11 +96,22 @@ class TestOrdinalPairing:
         assert [p['ordinal'] for p in pairs] == [1, 2, 3]
         assert pairs[0]['sss_data'] == make_frame(1)
         assert [s['id'] for s in pairs[0]['sst_snapshot']] == [7, 0, 0, 0]
-        # Session epoch is anchored at the first completed pair; the stamp is a
-        # sample-time sequence: epoch + (ordinal - 1) * hop_duration.
-        epoch = max(10.0 + HOP_DURATION, 10.1 + HOP_DURATION)
+        # Published stamps use the ROS clock domain, while receive times remain
+        # monotonic values used only for timeout and skew checks.
+        epoch = 1234.5
         for pair in pairs:
             assert pair['stamp'] == pytest.approx(epoch + (pair['ordinal'] - 1) * HOP_DURATION)
+
+    def test_published_stamp_does_not_use_monotonic_receive_time(self):
+        coordinator, _ = make_coordinator(stamp_clock=lambda: 1700000000.25)
+        sss_token, sst_token = start_session(coordinator)
+
+        submit_sss(coordinator, sss_token, 1, recv_time=12.0)
+        pairs = completed_pairs(
+            submit_sst(coordinator, sst_token, BASELINE, recv_time=12.1))
+
+        assert len(pairs) == 1
+        assert pairs[0]['stamp'] == pytest.approx(1700000000.25)
 
     def test_sst_arriving_before_sss_pairs_identically(self):
         coordinator, _ = make_coordinator()

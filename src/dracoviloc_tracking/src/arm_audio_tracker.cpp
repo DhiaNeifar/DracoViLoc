@@ -126,9 +126,10 @@ public:
     if (direct_classifier_source_ != "gre" &&
         direct_classifier_source_ != "ast" &&
         direct_classifier_source_ != "either" &&
+        direct_classifier_source_ != "mobilenetv2" &&
         direct_classifier_source_ != "yolo") {
       throw std::invalid_argument(
-        "direct_classifier_source must be gre, ast, either, or yolo");
+        "direct_classifier_source must be gre, ast, either, mobilenetv2, or yolo");
     }
     open_ekf_direction_log();
     open_yolo_direction_log();
@@ -169,6 +170,9 @@ public:
           [this](const geometry_msgs::msg::Vector3Stamped::SharedPtr msg) {direction_callback(*msg);});
       };
       if (direct_classifier_source_ == "yolo") subscribe("/yolo/direction", yolo_sub_);
+      if (direct_classifier_source_ == "mobilenetv2") {
+        subscribe("/mobilenetv2/direction", mobilenetv2_sub_);
+      }
       if (direct_classifier_source_ == "ast" || direct_classifier_source_ == "either") subscribe("/ast/direction", ast_sub_);
       if (direct_classifier_source_ == "gre" || direct_classifier_source_ == "either") subscribe("/gre/direction", gre_sub_);
     }
@@ -557,6 +561,9 @@ private:
     }
     if (direct_classifier_source_ == "gre" || direct_classifier_source_ == "either") {
       consider(gre_verdict_, have_gre_verdict_);
+    }
+    if (direct_classifier_source_ == "mobilenetv2") {
+      consider(mobilenetv2_verdict_, have_mobilenetv2_verdict_);
     }
     return best;
   }
@@ -948,6 +955,7 @@ private:
   rclcpp::Subscription<odas_ros_msgs::msg::OdasSstArrayStamped>::SharedPtr sst_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr ast_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr gre_sub_;
+  rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr mobilenetv2_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr valid_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr home_service_;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr tracking_service_;
@@ -975,7 +983,8 @@ private:
   bool ekf_enabled_{true};
   Verdict ast_verdict_{false, 0.0, rclcpp::Time(0, 0, RCL_ROS_TIME)};
   Verdict gre_verdict_{false, 0.0, rclcpp::Time(0, 0, RCL_ROS_TIME)};
-  bool have_ast_verdict_{false}, have_gre_verdict_{false};
+  Verdict mobilenetv2_verdict_{false, 0.0, rclcpp::Time(0, 0, RCL_ROS_TIME)};
+  bool have_ast_verdict_{false}, have_gre_verdict_{false}, have_mobilenetv2_verdict_{false};
   double target_timeout_, smoothing_alpha_, angular_deadband_, angular_deadband_exit_;
   double motion_penalty_;
   double command_horizon_, command_rate_hz_, max_velocity_, max_acceleration_;

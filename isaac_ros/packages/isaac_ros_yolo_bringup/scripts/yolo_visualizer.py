@@ -23,7 +23,6 @@
 
 import cv2
 import cv_bridge
-import message_filters
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
@@ -126,22 +125,17 @@ class Yolov8Visualizer(Node):
         self._processed_image_pub = self.create_publisher(
             Image, 'yolov8_processed_image',  self.QUEUE_SIZE)
 
-        self._detections_subscription = message_filters.Subscriber(
-            self,
-            Detection2DArray,
-            'detections_output')
-        self._image_subscription = message_filters.Subscriber(
-            self,
-            Image,
-            '/yolov8_encoder/resize/image')
+        self._latest_detections = Detection2DArray()
+        self._detections_subscription = self.create_subscription(
+            Detection2DArray, 'detections_output', self.detections_callback, self.QUEUE_SIZE)
+        self._image_subscription = self.create_subscription(
+            Image, '/yolov8_encoder/resize/image', self.image_callback, self.QUEUE_SIZE)
 
-        self.time_synchronizer = message_filters.TimeSynchronizer(
-            [self._detections_subscription, self._image_subscription],
-            self.QUEUE_SIZE)
+    def detections_callback(self, detections_msg):
+        self._latest_detections = detections_msg
 
-        self.time_synchronizer.registerCallback(self.detections_callback)
-
-    def detections_callback(self, detections_msg, img_msg):
+    def image_callback(self, img_msg):
+        detections_msg = self._latest_detections
         txt_color = (255, 0, 255)
         cv2_img = self._bridge.imgmsg_to_cv2(img_msg)
         for detection in detections_msg.detections:
