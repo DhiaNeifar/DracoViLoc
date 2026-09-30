@@ -17,13 +17,14 @@ spec.loader.exec_module(bringup)
 def configure(**changes):
     values = dict(tracking_mode='off', audio_enabled='false', ast_enabled='false',
                   gre_enabled='false', yolo_enabled='false', fusion_enabled='false',
-                  recording_enabled='false',
+                  recording_enabled='false', sss_channels_recording='false',
                   mobilenetv2_enabled='false', mobilenetv2_ekf_enabled='false',
                   mobilenetv2_engine_path='', mobilenetv2_venv_python='')
     values.update(changes)
     context = LaunchContext()
     context.launch_configurations.update(values)
-    return bringup._configure_pipeline(context, '/ast', '/gre', '/ekf', '/mobilenetv2')
+    return bringup._configure_pipeline(context, '/ast', '/gre', '/ekf', '/recording',
+                                       '/mobilenetv2')
 
 
 def test_disabled_needs_no_runtime():
@@ -67,6 +68,7 @@ def test_classifier_launch_defaults_do_not_leak(override):
     context.launch_configurations.update(dict(
         tracking_mode='off', audio_enabled='true', ast_enabled='true', gre_enabled='true',
         yolo_enabled='false', fusion_enabled='false', recording_enabled='false',
+        sss_channels_recording='false',
         mobilenetv2_enabled='true',
         mobilenetv2_ekf_enabled='false', mobilenetv2_engine_path=override,
         mobilenetv2_venv_python='', ast_threshold='0.20', mobilenetv2_threshold='0.75',
@@ -77,7 +79,7 @@ def test_classifier_launch_defaults_do_not_leak(override):
         table_mic_roll='1.57079632679'))
     context.extend_locals({'ros_specific_arguments': {'name': '', 'ns': ''}})
     shares = [get_package_share_directory('dracoviloc_' + name)
-              for name in ('ast', 'gre', 'ekf', 'mobilenetv2')]
+              for name in ('ast', 'gre', 'ekf', 'recording', 'mobilenetv2')]
     actions = bringup._configure_pipeline(context, *shares)
     commands = []
 
