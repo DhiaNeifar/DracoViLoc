@@ -101,7 +101,7 @@ docker run -d --privileged --network host --ipc=host \
   --entrypoint /usr/local/bin/scripts/workspace-entrypoint.sh \
   --workdir /workspaces/isaac_ros-dev \
   isaac_ros_yolo:draco-t2000 \
-  /bin/bash -lc 'export CUDA_MODULE_LOADING=LAZY; source /opt/ros/humble/setup.bash; source install/setup.bash; ros2 launch isaac_ros_yolo_direction yolo_camera.launch.py camera:=/dev/video4 model_path:=/workspaces/isaac_ros-dev/models/drone_yolo11n_best.onnx engine_path:=/workspaces/isaac_ros-dev/models/drone_yolo11n_best.plan width:=640 height:=480 camera_fps:=30 publish_rate:=15.0 direction_frame:=table_mic_link use_viewer:=true'
+  /bin/bash -lc 'export CUDA_MODULE_LOADING=LAZY; source /opt/ros/humble/setup.bash; source install/setup.bash; ros2 launch isaac_ros_yolo_direction yolo_camera.launch.py camera:=/dev/video4 model_path:=/workspaces/isaac_ros-dev/models/drone_yolo11n_best.onnx engine_path:=/workspaces/isaac_ros-dev/models/drone_yolo11n_best.plan width:=640 height:=480 camera_fps:=30 publish_rate:=30.0 direction_frame:=table_mic_link use_viewer:=true'
 ```
 
 Stop with `docker rm -f isaac_yolo`. Re-tag after any rebuild:
@@ -132,7 +132,7 @@ ros2 launch isaac_ros_yolo_direction yolo_camera.launch.py \
   camera:=/dev/video4 \
   model_path:=/workspaces/isaac_ros-dev/models/drone_yolo11n_best.onnx \
   engine_path:=/workspaces/isaac_ros-dev/models/drone_yolo11n_best.plan \
-  width:=640 height:=480 camera_fps:=30 publish_rate:=15.0 \
+  width:=640 height:=480 camera_fps:=30 publish_rate:=30.0 \
   direction_frame:=table_mic_link \
   use_viewer:=true
 ```

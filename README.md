@@ -288,7 +288,7 @@ ros2 launch isaac_ros_yolo_direction yolo_camera.launch.py \
   width:=640 \
   height:=480 \
   camera_fps:=30 \
-  publish_rate:=15.0 \
+  publish_rate:=30.0 \
   direction_frame:=table_mic_link \
   use_viewer:=true
 ```

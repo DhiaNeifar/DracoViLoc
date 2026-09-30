@@ -79,18 +79,18 @@ class ArmAudioTracker : public rclcpp::Node {
 public:
   ArmAudioTracker() : Node("arm_audio_tracker") {
     target_timeout_ = declare_parameter("target_timeout", 0.75);
-    smoothing_alpha_ = declare_parameter("smoothing_alpha", 0.20);
-    angular_deadband_ = declare_parameter("angular_deadband", 0.08);
-    angular_deadband_exit_ = declare_parameter("angular_deadband_exit", 0.04);
+    smoothing_alpha_ = declare_parameter("smoothing_alpha", 0.50);
+    angular_deadband_ = declare_parameter("angular_deadband", 0.02);
+    angular_deadband_exit_ = declare_parameter("angular_deadband_exit", 0.01);
     motion_penalty_ = declare_parameter("motion_penalty", 0.015);
     // command_horizon is retained as a declared parameter so older launch
     // commands remain valid. Tracking no longer sends short trajectories.
     command_horizon_ = declare_parameter("command_horizon", 0.20);
     command_rate_hz_ = declare_parameter("command_rate_hz", 100.0);
-    max_velocity_ = declare_parameter("max_velocity", 0.60);
-    max_acceleration_ = declare_parameter("max_acceleration", 0.80);
-    max_jerk_ = declare_parameter("max_jerk", 4.0);
-    max_tracking_error_ = declare_parameter("max_tracking_error", 0.35);
+    max_velocity_ = declare_parameter("max_velocity", 2.50);
+    max_acceleration_ = declare_parameter("max_acceleration", 12.0);
+    max_jerk_ = declare_parameter("max_jerk", 80.0);
+    max_tracking_error_ = declare_parameter("max_tracking_error", 0.50);
     world_frame_ = declare_parameter("world_frame", std::string("world"));
     // Fallback only. The frame actually used is the one stamped on each
     // incoming message, so this matters only if the EKF ships an empty
@@ -735,6 +735,8 @@ private:
   {
     fixed_ = joints;
     motion_latched_ = false;
+    has_prev_solve_ = false;
+    ff_velocity_.fill(0.0);
     wrist_lookup_.clear();
     wrist_lookup_.reserve(160);
     for (double q4 = -M_PI_2; q4 <= M_PI_2; q4 += 0.02) {
@@ -817,6 +819,8 @@ private:
         index == 0 ? -3.0543 : -M_PI_2,
         index == 0 ? 3.0543 : M_PI_2);
     }
+    ff_velocity_.fill(0.0);
+    has_prev_solve_ = false;
     servo_input_.target_velocity.fill(0.0);
     servo_input_.target_acceleration.fill(0.0);
     stopping_target_set_ = true;
@@ -901,14 +905,41 @@ private:
     if (motion_latched_) {
       target = solve(servo_input_.current_position, desired);
       servo_input_.target_position = target;
-      servo_input_.target_velocity.fill(0.0);
+      const auto now_time = now();
+      if (!has_prev_solve_) {
+        ff_velocity_.fill(0.0);
+        servo_input_.target_velocity.fill(0.0);
+        has_prev_solve_ = true;
+      } else {
+        const double dt = (now_time - prev_solve_time_).seconds();
+        if (dt > 1e-4 && dt < 1.0) {
+          std::array<double, 6> raw_ff{};
+          raw_ff.fill(0.0);
+          for (const std::size_t j : active_joints_) {
+            raw_ff[j] = (target[j] - prev_solved_target_[j]) / dt;
+            raw_ff[j] = std::clamp(raw_ff[j], -max_velocity_, max_velocity_);
+            ff_velocity_[j] = 0.7 * ff_velocity_[j] + 0.3 * raw_ff[j];
+          }
+          servo_input_.target_velocity = ff_velocity_;
+        } else {
+          ff_velocity_.fill(0.0);
+          servo_input_.target_velocity.fill(0.0);
+        }
+      }
+      prev_solved_target_ = target;
+      prev_solve_time_ = now_time;
       servo_input_.target_acceleration.fill(0.0);
       stopping_target_set_ = false;
-    } else if (!stopping_target_set_) {
-      set_stopping_target();
-      target = servo_input_.target_position;
     } else {
-      target = servo_input_.target_position;
+      has_prev_solve_ = false;
+      ff_velocity_.fill(0.0);
+      servo_input_.target_velocity.fill(0.0);
+      if (!stopping_target_set_) {
+        set_stopping_target();
+        target = servo_input_.target_position;
+      } else {
+        target = servo_input_.target_position;
+      }
     }
     const double solution_error = have_direction ?
       angle(microphone_normal(target), desired) : 0.0;
@@ -980,6 +1011,10 @@ private:
   ControlState control_state_{ControlState::Trajectory};
   bool home_requested_{false}, home_reached_{false};
   bool motion_latched_{false}, stopping_target_set_{false};
+  std::array<double, 6> prev_solved_target_{};
+  rclcpp::Time prev_solve_time_{0, 0, RCL_ROS_TIME};
+  std::array<double, 6> ff_velocity_{};
+  bool has_prev_solve_{false};
   bool ekf_enabled_{true};
   Verdict ast_verdict_{false, 0.0, rclcpp::Time(0, 0, RCL_ROS_TIME)};
   Verdict gre_verdict_{false, 0.0, rclcpp::Time(0, 0, RCL_ROS_TIME)};

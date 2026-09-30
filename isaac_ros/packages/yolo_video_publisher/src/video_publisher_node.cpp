@@ -35,6 +35,7 @@ public:
     if (!capture_.isOpened()) {
       throw std::runtime_error("Could not open video: " + video_path);
     }
+    capture_.set(cv::CAP_PROP_BUFFERSIZE, 1);
 
     width_ = static_cast<uint32_t>(capture_.get(cv::CAP_PROP_FRAME_WIDTH));
     height_ = static_cast<uint32_t>(capture_.get(cv::CAP_PROP_FRAME_HEIGHT));

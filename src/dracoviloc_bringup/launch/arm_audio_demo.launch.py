@@ -324,20 +324,20 @@ def generate_launch_description():
                         "AST classifies continuously regardless of ODAS "
                         "track state, for validating the model independent "
                         "of SSL/SST tuning."),
-        DeclareLaunchArgument("smoothing_alpha", default_value="0.20"),
+        DeclareLaunchArgument("smoothing_alpha", default_value="0.50"),
         DeclareLaunchArgument(
-            "angular_deadband", default_value="0.08",
+            "angular_deadband", default_value="0.02",
             description="Pointing error that starts arm tracking, in radians."),
         DeclareLaunchArgument(
-            "angular_deadband_exit", default_value="0.04",
+            "angular_deadband_exit", default_value="0.01",
             description="Smaller pointing error that stops tracking, in radians."),
-        DeclareLaunchArgument("max_velocity", default_value="0.60"),
-        DeclareLaunchArgument("max_acceleration", default_value="0.80"),
+        DeclareLaunchArgument("max_velocity", default_value="2.50"),
+        DeclareLaunchArgument("max_acceleration", default_value="12.0"),
         DeclareLaunchArgument(
-            "max_jerk", default_value="4.0",
+            "max_jerk", default_value="80.0",
             description="Maximum tracking jerk in rad/s^3."),
         DeclareLaunchArgument(
-            "max_tracking_error", default_value="0.35",
+            "max_tracking_error", default_value="0.50",
             description="Stop tracking if measured and generated joint positions differ by this many radians."),
         DeclareLaunchArgument(
             "command_rate_hz", default_value="100.0",
