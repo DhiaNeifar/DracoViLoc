@@ -19,7 +19,8 @@ def configure(**changes):
                   gre_enabled='false', yolo_enabled='false', fusion_enabled='false',
                   recording_enabled='false', sss_channels_recording='false',
                   mobilenetv2_enabled='false', mobilenetv2_ekf_enabled='false',
-                  mobilenetv2_engine_path='', mobilenetv2_venv_python='')
+                  mobilenetv2_engine_path='', mobilenetv2_venv_python='',
+                  direction_marker_length='1.0', direction_marker_timeout='1.25')
     values.update(changes)
     context = LaunchContext()
     context.launch_configurations.update(values)
@@ -76,7 +77,8 @@ def test_classifier_launch_defaults_do_not_leak(override):
         always_classify='false', min_activity='0.10',
         table_mic_x='0.0', table_mic_y='0.0', table_mic_z='0.75',
         table_mic_yaw='3.1415926535897', table_mic_pitch='0.0',
-        table_mic_roll='1.57079632679'))
+        table_mic_roll='1.57079632679', direction_marker_length='1.0',
+        direction_marker_timeout='1.25'))
     context.extend_locals({'ros_specific_arguments': {'name': '', 'ns': ''}})
     shares = [get_package_share_directory('dracoviloc_' + name)
               for name in ('ast', 'gre', 'ekf', 'recording', 'mobilenetv2')]
@@ -94,7 +96,7 @@ def test_classifier_launch_defaults_do_not_leak(override):
 
     for action in actions:
         visit(action)
-    assert len(commands) == 4
+    assert len(commands) == 5
     process_commands = [command for command in commands
                         if 'static_transform_publisher' not in command[0]]
     ast = next(command for command in process_commands

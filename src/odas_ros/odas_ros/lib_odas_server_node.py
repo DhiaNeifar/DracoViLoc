@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import array
+from datetime import datetime, timezone
 import json
 import math
 import socket
@@ -9,8 +10,10 @@ import os
 import signal
 import subprocess
 import queue
+import traceback
 from typing import ByteString, Callable, Dict, List, Optional, Tuple
 
+from ament_index_python.packages import get_package_prefix
 import libconf
 import io
 
@@ -30,6 +33,40 @@ SESSION_INVALIDATE_TIMEOUT = 0.5
 MAX_CONSECUTIVE_PAIR_VIOLATIONS = 3
 MAX_PENDING_PAIRS = 64
 SST_TIMEOUT = 0.25
+
+
+class DiagnosticLog:
+    """Thread-safe JSON-lines event log for the complete ODAS bridge process."""
+
+    def __init__(self, requested_path: str = ''):
+        if requested_path:
+            path = os.path.abspath(os.path.expanduser(requested_path))
+        else:
+            log_root = os.environ.get('ROS_LOG_DIR', os.path.expanduser('~/.ros/log'))
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            path = os.path.join(log_root, 'odas_diagnostics_{}_{}.jsonl'.format(
+                timestamp, os.getpid()))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.path = path
+        self._lock = threading.Lock()
+        self._file = open(path, 'a', buffering=1, encoding='utf-8')
+
+    def record(self, event: str, **fields):
+        entry = {
+            'time': datetime.now(timezone.utc).isoformat(),
+            'monotonic_s': round(time.monotonic(), 6),
+            'event': event,
+        }
+        entry.update(fields)
+        line = json.dumps(entry, sort_keys=True, default=str)
+        with self._lock:
+            if not self._file.closed:
+                self._file.write(line + '\n')
+
+    def close(self):
+        with self._lock:
+            if not self._file.closed:
+                self._file.close()
 
 
 def nbits_to_format(nbits):
@@ -175,6 +212,11 @@ class PairCoordinator:
         self._paired_enabled = True
         self._skew_violation_count = 0
         self._last_skew_log = None
+        self._total_sessions = 0
+        self._total_pairs = 0
+        self._total_violations = 0
+        self._total_invalidations = 0
+        self._last_paired_ordinal = None
         self._clear_session_state_locked()
 
     def is_paired_enabled(self) -> bool:
@@ -185,6 +227,27 @@ class PairCoordinator:
         """True when both current SSS and SST connections are established."""
         with self._lock:
             return self._sss_token is not None and self._sst_token is not None
+
+    def diagnostics_snapshot(self) -> dict:
+        """Return a consistent, low-cost snapshot for the periodic heartbeat."""
+        with self._lock:
+            return {
+                'paired_enabled': self._paired_enabled,
+                'session_active': self._sss_token is not None and self._sst_token is not None,
+                'generation': self._generation,
+                'validated': self._validated,
+                'baseline': self._baseline,
+                'last_sst_timestamp': self._last_sst_time_stamp,
+                'last_paired_ordinal': self._last_paired_ordinal,
+                'pending_sss': len(self._pending_sss),
+                'pending_sst': len(self._pending_sst),
+                'consecutive_violations': self._consecutive_violations,
+                'total_sessions': self._total_sessions,
+                'total_pairs': self._total_pairs,
+                'total_violations': self._total_violations,
+                'total_invalidations': self._total_invalidations,
+                'skew_violations': self._skew_violation_count,
+            }
 
     def register_connection(self, stream: str) -> Tuple[int, List[dict]]:
         """Register an accepted socket for one stream; returns (token, events).
@@ -326,6 +389,7 @@ class PairCoordinator:
         sst_token = self._sst_token
         self._clear_session_state_locked()
         self._generation += 1
+        self._total_sessions += 1
         self._sss_token = sss_token
         self._sst_token = sst_token
         self._log_info('Paired SSS/SST session {} started; next SSS ordinal = 1, waiting for SST baseline'.format(
@@ -334,6 +398,7 @@ class PairCoordinator:
 
     def _invalidate_session_locked(self, reason: str) -> List[dict]:
         generation = self._generation
+        self._total_invalidations += 1
         self._clear_session_state_locked()
         self._log_error('Paired SSS/SST session {} invalidated: {}'.format(generation, reason))
         return [{'type': 'session_invalidated', 'reason': reason, 'generation': generation}]
@@ -347,6 +412,7 @@ class PairCoordinator:
 
     def _violation_locked(self, kind: str, detail: str) -> List[dict]:
         self._consecutive_violations += 1
+        self._total_violations += 1
         self._log_error('SSS/SST pairing violation ({}) [consecutive={}/{}]: {}'.format(
             kind, self._consecutive_violations, self._max_consecutive_pair_violations, detail))
         return [{'type': 'violation', 'kind': kind, 'detail': detail,
@@ -397,6 +463,8 @@ class PairCoordinator:
                 '(session generation {}, {} fixed slots, session epoch {:.6f})'.format(
                     ordinal, self._baseline, self._generation, self._slot_count, self._session_epoch))
         self._validated = True
+        self._total_pairs += 1
+        self._last_paired_ordinal = ordinal
 
         stamp = self._session_epoch + (ordinal - 1) * self._hop_duration
         events = []
@@ -419,15 +487,53 @@ class PairCoordinator:
 class SocketServer(ABC):
     def __init__(self, node: rclpy.node.Node, port: int):
         self._node = node
-        self._node.get_logger().info("Creating server socket on port: " + str(port))
+        self._stream_name = type(self).__name__
+        self._port = port
+        self._metrics_lock = threading.Lock()
+        self._metrics = {
+            'connections': 0,
+            'disconnects': 0,
+            'handler_errors': 0,
+            'bytes_received': 0,
+            'bytes_sent': 0,
+            'messages_received': 0,
+            'messages_published': 0,
+        }
+        self._connected = False
+        self._last_activity_monotonic = None
+        self._active_client_socket = None
+        self._node.get_logger().info(
+            '{} creating server socket on port {}'.format(self._stream_name, port))
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server_socket.setsockopt(socket. SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._server_socket.bind(('', port))
         self._server_socket.listen(5)
         self._server_socket.settimeout(0.1)
 
-        self._thread = threading.Thread(target=self._run)
+        self._thread = threading.Thread(
+            target=self._run, name='{}_port_{}'.format(self._stream_name, port))
         self._is_stopped = True
+
+    def _bump(self, name: str, amount: int = 1):
+        with self._metrics_lock:
+            self._metrics[name] = self._metrics.get(name, 0) + amount
+            self._last_activity_monotonic = time.monotonic()
+
+    def diagnostics_snapshot(self) -> dict:
+        with self._metrics_lock:
+            snapshot = dict(self._metrics)
+            snapshot['connected'] = self._connected
+            snapshot['port'] = self._port
+            snapshot['thread_alive'] = self._thread.is_alive()
+            snapshot['last_activity_age_s'] = (
+                None if self._last_activity_monotonic is None else
+                round(time.monotonic() - self._last_activity_monotonic, 3))
+            return snapshot
+
+    def _record_event(self, event: str, **fields):
+        recorder = getattr(self._node, 'record_diagnostic_event', None)
+        if recorder is not None:
+            recorder(event, stream=self._stream_name, port=self._port, **fields)
 
     def start(self):
         self._is_stopped = False
@@ -435,20 +541,61 @@ class SocketServer(ABC):
 
     def close(self):
         self._is_stopped = True
+        client_socket = self._active_client_socket
+        if client_socket is not None:
+            try:
+                client_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
         self._server_socket.close()
-        self._thread.join()
+        self._thread.join(timeout=3.0)
+        if self._thread.is_alive():
+            self._node.get_logger().error(
+                '{} worker did not stop within 3 seconds'.format(self._stream_name))
+            self._record_event('socket_thread_stop_timeout')
 
     def _run(self):
-         while not self._is_stopped:
+        while not self._is_stopped:
             try:
-                client_socket, _ = self._server_socket.accept()
-            except (socket.timeout, OSError):
+                client_socket, peer = self._server_socket.accept()
+            except socket.timeout:
+                continue
+            except OSError as exc:
+                if not self._is_stopped:
+                    self._bump('handler_errors')
+                    self._node.get_logger().error(
+                        '{} accept failed on port {}: {!r}'.format(
+                            self._stream_name, self._port, exc))
+                    self._record_event('socket_accept_error', error=repr(exc))
                 continue
 
+            self._active_client_socket = client_socket
+            with self._metrics_lock:
+                self._connected = True
+            self._bump('connections')
+            self._node.get_logger().info(
+                '{} accepted connection from {}:{}'.format(
+                    self._stream_name, peer[0], peer[1]))
+            self._record_event('socket_connected', peer='{}:{}'.format(peer[0], peer[1]))
             try:
                 self._handle_client(client_socket)
+            except Exception as exc:
+                self._bump('handler_errors')
+                detail = traceback.format_exc()
+                self._node.get_logger().error(
+                    '{} client handler failed: {!r}\n{}'.format(
+                        self._stream_name, exc, detail))
+                self._record_event(
+                    'socket_handler_exception', error=repr(exc), traceback=detail)
             finally:
                 client_socket.close()
+                self._active_client_socket = None
+                with self._metrics_lock:
+                    self._connected = False
+                self._bump('disconnects')
+                self._node.get_logger().warning(
+                    '{} connection closed'.format(self._stream_name))
+                self._record_event('socket_disconnected')
 
     @abstractmethod
     def _handle_client(self, client_socket):
@@ -812,7 +959,7 @@ class OdasServerNode(rclpy.node.Node):
         # analog boost on Linux (ALSA capture is an attenuator at max 0 dB), so
         # quiet sources reach classifiers and recorders at very low level.
         # Enabled by default; set to 0.0 to publish the raw ODAS separation level.
-        sss_gain_db = self.declare_parameter('sss_gain_db', 24.0).get_parameter_value().double_value
+        sss_gain_db = self.declare_parameter('sss_gain_db', 26.0).get_parameter_value().double_value
         self._sss_gain = math.pow(10.0, sss_gain_db / 20.0)
         self.get_logger().info('/sss gain: {} dB ({:.2f}x)'.format(sss_gain_db, self._sss_gain))
 

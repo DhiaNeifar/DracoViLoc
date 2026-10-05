@@ -241,7 +241,7 @@ against this pipeline's real behavior, not the published model numbers.
 | AST process exits immediately with an import error | `trt_env` missing or incomplete on this machine, or `ast_venv_python`/`ast_engine_path` launch args point somewhere that doesn't exist — check `ros2 launch ... --show-args` output for the resolved paths |
 | `FileNotFoundError` for the engine | `models/drone_ast.engine` was not copied onto this machine — it is intentionally not in git |
 | `'numpy._DTypeMeta' object is not subscriptable'` | A pip package inside `trt_env` pulled in NumPy ≥ 2; downgrade that package, never NumPy |
-| `/ssl` full but `/sst` empty | No source held a bearing for `N_prob` frames, or `probMin` too high in `configuration.cfg` |
+| `/ssl` full but `/sst` empty | SSL candidates did not pass the SST active/inactive energy model and the `theta_new`/`theta_prob` gates for `N_prob` frames. `ssl.probMin` trains search-window deltas at startup; it is not the runtime SST acceptance threshold. |
 
 ---
 

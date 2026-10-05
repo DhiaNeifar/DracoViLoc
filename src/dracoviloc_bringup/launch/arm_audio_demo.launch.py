@@ -171,6 +171,21 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share,
                               "output_average_window": LaunchConfiguration(
                                   "ekf_average_window")}.items()))
 
+    if mobilenetv2_enabled or gre_enabled or fusion_enabled:
+        actions.append(Node(
+            package="dracoviloc_bringup",
+            executable="direction_marker_visualizer",
+            parameters=[{
+                "mobilenetv2_enabled": mobilenetv2_enabled,
+                "gre_enabled": gre_enabled,
+                "ekf_enabled": fusion_enabled,
+                "arrow_length": ParameterValue(
+                    LaunchConfiguration("direction_marker_length"), value_type=float),
+                "marker_timeout": ParameterValue(
+                    LaunchConfiguration("direction_marker_timeout"), value_type=float),
+            }],
+            output="screen"))
+
     if mode != "off":
         actions.append(Node(
             package="dracoviloc_tracking",
@@ -369,6 +384,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "ekf_average_window", default_value="5",
             description="Number of accepted EKF estimates averaged before publication."),
+        DeclareLaunchArgument(
+            "direction_marker_length", default_value="1.0",
+            description="Length in metres of MobileNetV2, GRE, and EKF RViz arrows."),
+        DeclareLaunchArgument(
+            "direction_marker_timeout", default_value="1.25",
+            description="Remove a prediction arrow after this many seconds without an update."),
         DeclareLaunchArgument(
             "require_home_before_tracking", default_value="true",
             description="Require /demo/home to reach the SRDF home pose before tracking can start."),

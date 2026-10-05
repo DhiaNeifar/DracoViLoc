@@ -45,6 +45,36 @@ Visualization Manager:
         Value: /yolo/target_marker
       Name: YOLO Target Ray
       Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Marker Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /mobilenetv2/target_marker
+      Name: MobileNetV2 Target Ray
+      Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Marker Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /gre/target_marker
+      Name: GRE Target Ray
+      Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Marker Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /ekf/target_marker
+      Name: EKF Target Ray
+      Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: false
       Axis: Z
