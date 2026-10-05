@@ -580,21 +580,23 @@ class SocketServer(ABC):
             try:
                 self._handle_client(client_socket)
             except Exception as exc:
-                self._bump('handler_errors')
-                detail = traceback.format_exc()
-                self._node.get_logger().error(
-                    '{} client handler failed: {!r}\n{}'.format(
-                        self._stream_name, exc, detail))
-                self._record_event(
-                    'socket_handler_exception', error=repr(exc), traceback=detail)
+                if not self._is_stopped:
+                    self._bump('handler_errors')
+                    detail = traceback.format_exc()
+                    self._node.get_logger().error(
+                        '{} client handler failed: {!r}\n{}'.format(
+                            self._stream_name, exc, detail))
+                    self._record_event(
+                        'socket_handler_exception', error=repr(exc), traceback=detail)
             finally:
                 client_socket.close()
                 self._active_client_socket = None
                 with self._metrics_lock:
                     self._connected = False
                 self._bump('disconnects')
-                self._node.get_logger().warning(
-                    '{} connection closed'.format(self._stream_name))
+                if rclpy.ok():
+                    self._node.get_logger().warning(
+                        '{} connection closed'.format(self._stream_name))
                 self._record_event('socket_disconnected')
 
     @abstractmethod
@@ -621,6 +623,8 @@ class RawSocketServer(SocketServer):
         self._raw_sub = self._node.create_subscription(AudioFrame, 'raw', self._raw_audio_cb, audio_queue_size)
 
     def _raw_audio_cb(self, msg: AudioFrame):
+        self._bump('messages_received')
+        self._bump('bytes_received', len(msg.data))
         if (msg.format != self._raw_format or
             msg.channel_count != self._raw_channel_count or
             msg.sampling_frequency != self._raw_sampling_frequency or
@@ -646,7 +650,11 @@ class RawSocketServer(SocketServer):
                 break
             try:
                 client_socket.sendall(data)
-            except OSError:
+                self._bump('bytes_sent', len(data))
+            except OSError as exc:
+                self._node.get_logger().error(
+                    'RawSocketServer send failed: {!r}'.format(exc))
+                self._record_event('raw_send_error', error=repr(exc))
                 break
 
 
@@ -663,14 +671,22 @@ class JsonSocketServer(SocketServer):
             if not data:
                 break
 
+            self._bump('bytes_received', len(data))
+
             data = data.decode('utf-8')
 
             for message in self._split_json(data):
                 try:
                     data = json.loads(message)
+                    self._bump('messages_received')
                     self._handle_data(data)
                 except Exception as e:
-                    self._node.get_logger().error(str(type(self)) + str(e) + 'message: ' + str(message) + ' *** data: ' + str(data))
+                    self._bump('handler_errors')
+                    self._node.get_logger().error(
+                        '{} failed to decode/process JSON: {!r}; message={!r}'
+                        .format(type(self).__name__, e, message[:512]))
+                    self._record_event(
+                        'json_processing_error', error=repr(e), message=message[:512])
                     continue
 
     def _split_json(self, data: str):
@@ -722,6 +738,7 @@ class SslSocketServer(JsonSocketServer):
 
         if rclpy.ok():
             self._ssl_pub.publish(odas_ssl_array_stamped_msg)
+            self._bump('messages_published')
 
 
 class _PairedStreamMixin:
@@ -764,13 +781,22 @@ class _PairedStreamMixin:
         for event in events or []:
             event_type = event['type']
             if event_type == 'pair':
-                if self._pair_publisher is not None:
+                if self._pair_publisher is not None and rclpy.ok():
                     self._pair_publisher(event['ordinal'], event['stamp'],
                                          event['sss_data'], event['sst_snapshot'])
-            elif event_type == 'session_invalidated':
-                self.close_current_client()
-                if self._peer_server is not None:
-                    self._peer_server.close_current_client()
+            else:
+                # Pair events occur at the audio hop rate and are summarized by
+                # the heartbeat. State changes and violations are rare and are
+                # preserved individually in the diagnostic JSONL file.
+                safe_event = {
+                    key: value for key, value in event.items()
+                    if key not in ('sss_data', 'sst_snapshot')
+                }
+                self._record_event('pairing_' + event_type, details=safe_event)
+                if event_type == 'session_invalidated':
+                    self.close_current_client()
+                    if self._peer_server is not None:
+                        self._peer_server.close_current_client()
 
 
 class SstSocketServer(JsonSocketServer, _PairedStreamMixin):
@@ -796,7 +822,7 @@ class SstSocketServer(JsonSocketServer, _PairedStreamMixin):
             super()._handle_client(client_socket)
         finally:
             self._current_client_socket = None
-            if self._coordinator is not None:
+            if self._coordinator is not None and not self._is_stopped:
                 self._handle_coordinator_events(self._coordinator.connection_lost(self._connection_token))
             self._connection_token = None
 
@@ -807,6 +833,10 @@ class SstSocketServer(JsonSocketServer, _PairedStreamMixin):
             self._node.get_logger().error(
                 'Rejecting SST snapshot: expected {} fixed slots (one per /sss channel), got {}; whole snapshot discarded'
                 .format(self._slot_count, src_count))
+            self._bump('rejected_snapshots')
+            self._record_event(
+                'sst_snapshot_rejected', expected_slots=self._slot_count,
+                received_slots=src_count, timestamp=sst.get('timeStamp'))
             return
 
         if (self._coordinator is not None and self._connection_token is not None and
@@ -825,6 +855,7 @@ class SstSocketServer(JsonSocketServer, _PairedStreamMixin):
 
         if rclpy.ok():
             self._sst_pub.publish(odas_sst_array_stamped_msg)
+            self._bump('messages_published')
 
     def publish_pair_snapshot(self, snapshot: List[dict], stamp_msg):
         odas_sst_array_stamped_msg = OdasSstArrayStamped()
@@ -834,6 +865,7 @@ class SstSocketServer(JsonSocketServer, _PairedStreamMixin):
 
         if rclpy.ok():
             self._sst_pub.publish(odas_sst_array_stamped_msg)
+            self._bump('messages_published')
 
     @staticmethod
     def _fill_sst_sources(msg: OdasSstArrayStamped, snapshot: List[dict]):
@@ -894,7 +926,10 @@ class SssSocketServer(SocketServer, _PairedStreamMixin):
                 if not data:
                     break
 
+                self._bump('bytes_received', len(data))
+
                 for frame in extractor.append(data):
+                    self._bump('frames_reconstructed')
                     if (self._coordinator is not None and self._connection_token is not None and
                             self._coordinator.is_paired_enabled()):
                         events = self._coordinator.submit_sss_frame(
@@ -908,8 +943,12 @@ class SssSocketServer(SocketServer, _PairedStreamMixin):
                 self._node.get_logger().error(
                     'SSS connection closed with {} incomplete tail bytes discarded '
                     '(frame_size={}, incomplete PCM frame lost)'.format(tail_size, self._frame_size))
+                self._bump('incomplete_tail_bytes', tail_size)
+                self._record_event(
+                    'sss_incomplete_frame_discarded', tail_bytes=tail_size,
+                    frame_size=self._frame_size)
             self._current_client_socket = None
-            if self._coordinator is not None:
+            if self._coordinator is not None and not self._is_stopped:
                 self._handle_coordinator_events(self._coordinator.connection_lost(self._connection_token))
             self._connection_token = None
 
@@ -925,6 +964,7 @@ class SssSocketServer(SocketServer, _PairedStreamMixin):
 
         if rclpy.ok():
             self._sss_pub.publish(audio_frame_msg)
+            self._bump('messages_published')
 
     def publish_pair_frame(self, data: ByteString, stamp_msg):
         audio_frame_msg = AudioFrame()
@@ -938,6 +978,7 @@ class SssSocketServer(SocketServer, _PairedStreamMixin):
 
         if rclpy.ok():
             self._sss_pub.publish(audio_frame_msg)
+            self._bump('messages_published')
 
     def _get_timestamp(self):
         if self._audio_frame_timestamp_queue is None:
@@ -949,6 +990,26 @@ class SssSocketServer(SocketServer, _PairedStreamMixin):
 class OdasServerNode(rclpy.node.Node):
     def __init__(self, node_name: str):
         super().__init__(node_name)
+
+        diagnostic_path = self.declare_parameter(
+            'diagnostics_log_path', '').get_parameter_value().string_value
+        self._diagnostic_log = DiagnosticLog(diagnostic_path)
+        self._diagnostics_interval_s = self.declare_parameter(
+            'diagnostics_interval_s', 10.0).get_parameter_value().double_value
+        if self._diagnostics_interval_s <= 0.0:
+            raise ValueError('diagnostics_interval_s must be positive')
+        self._started_monotonic = time.monotonic()
+        self._core_process = None
+        self._core_output_thread = None
+        self._unexpected_core_returncode = None
+        self._core_failure_reported = False
+        self._stopping = False
+        self._health_timer = None
+        self._core_monitor_timer = None
+        self.get_logger().info(
+            'ODAS structured diagnostics: {}'.format(self._diagnostic_log.path))
+        self.record_diagnostic_event(
+            'bridge_start', pid=os.getpid(), diagnostics_path=self._diagnostic_log.path)
 
         self._configuration_path = self.declare_parameter('configuration_path', '').get_parameter_value().string_value
         self._configuration = self._load_configuration(self._configuration_path)
@@ -962,6 +1023,9 @@ class OdasServerNode(rclpy.node.Node):
         sss_gain_db = self.declare_parameter('sss_gain_db', 26.0).get_parameter_value().double_value
         self._sss_gain = math.pow(10.0, sss_gain_db / 20.0)
         self.get_logger().info('/sss gain: {} dB ({:.2f}x)'.format(sss_gain_db, self._sss_gain))
+        self.record_diagnostic_event(
+            'configuration_loaded', configuration_path=self._configuration_path,
+            frame_id=frame_id, sss_gain_db=sss_gain_db)
 
         if self._verify_raw_and_sss_configuration():
             audio_frame_timestamp_queue = queue.Queue()
@@ -1012,6 +1076,155 @@ class OdasServerNode(rclpy.node.Node):
         elif self._coordinator is not None:
             self.get_logger().info('Only one of SST/SSS socket outputs configured; '
                                    'independent publication mode preserved')
+
+    def record_diagnostic_event(self, event: str, **fields):
+        self._diagnostic_log.record(event, **fields)
+
+    @staticmethod
+    def _describe_returncode(returncode: int) -> str:
+        if returncode < 0:
+            signal_number = -returncode
+            try:
+                signal_name = signal.Signals(signal_number).name
+            except ValueError:
+                signal_name = 'UNKNOWN_SIGNAL'
+            return 'signal {} ({})'.format(signal_number, signal_name)
+        return 'exit code {}'.format(returncode)
+
+    def _core_executable(self) -> str:
+        return os.path.join(
+            get_package_prefix('odas_ros'), 'lib', 'odas_ros', 'odas_core_node')
+
+    def _read_core_output(self):
+        stream = self._core_process.stdout
+        if stream is None:
+            return
+        try:
+            for line in iter(stream.readline, ''):
+                message = line.rstrip('\r\n')
+                if not message:
+                    continue
+                if rclpy.ok():
+                    self.get_logger().info('[odas_core] ' + message)
+                self.record_diagnostic_event('core_output', message=message)
+        except Exception as exc:
+            if not self._stopping:
+                self.get_logger().error(
+                    'Failed while reading odas_core output: {!r}'.format(exc))
+                self.record_diagnostic_event('core_output_reader_error', error=repr(exc))
+        finally:
+            stream.close()
+
+    def _start_core_process(self):
+        executable = self._core_executable()
+        executable_args = [
+            executable,
+            '--ros-args',
+            '-r', '__node:=odas_core_node',
+            '-p', 'configuration_path:=' + self._configuration_path,
+        ]
+        self.get_logger().info(
+            'Starting ODAS core directly: {}'.format(' '.join(executable_args)))
+        self._core_process = subprocess.Popen(
+            executable_args,
+            cwd=os.curdir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            start_new_session=True)
+        self.record_diagnostic_event(
+            'core_started', pid=self._core_process.pid, executable=executable,
+            arguments=executable_args[1:])
+        self._core_output_thread = threading.Thread(
+            target=self._read_core_output, name='odas_core_output', daemon=True)
+        self._core_output_thread.start()
+
+    def _check_core_process(self):
+        if self._core_process is None or self._stopping:
+            return
+        returncode = self._core_process.poll()
+        if returncode is None or self._core_failure_reported:
+            return
+        self._core_failure_reported = True
+        self._unexpected_core_returncode = returncode
+        description = self._describe_returncode(returncode)
+        self.get_logger().fatal(
+            'ODAS CORE FAILED after {:.1f}s: {}. SSS/SST output has stopped. '
+            'Inspect {}'.format(
+                time.monotonic() - self._started_monotonic,
+                description, self._diagnostic_log.path))
+        self.record_diagnostic_event(
+            'core_failed', returncode=returncode, description=description,
+            uptime_s=round(time.monotonic() - self._started_monotonic, 3))
+        if rclpy.ok():
+            rclpy.shutdown()
+
+    def _log_health(self):
+        core_returncode = None if self._core_process is None else self._core_process.poll()
+        core = {
+            'pid': None if self._core_process is None else self._core_process.pid,
+            'running': self._core_process is not None and core_returncode is None,
+            'returncode': core_returncode,
+        }
+        streams = {}
+        for name, server in (
+                ('raw', self._raw_socket_server),
+                ('ssl', self._ssl_socket_server),
+                ('sst', self._sst_socket_server),
+                ('sss', self._sss_socket_server)):
+            if server is not None:
+                streams[name] = server.diagnostics_snapshot()
+        pairing = None if self._coordinator is None else self._coordinator.diagnostics_snapshot()
+        uptime = time.monotonic() - self._started_monotonic
+        self.record_diagnostic_event(
+            'health', uptime_s=round(uptime, 3), core=core,
+            streams=streams, pairing=pairing)
+        pair_count = 0 if pairing is None else pairing['total_pairs']
+        self.get_logger().info(
+            'ODAS health uptime={:.0f}s core={} pairs={} | '
+            'SSL rx/pub={}/{} SST rx/pub={}/{} SSS frames/pub={}/{}'.format(
+                uptime, 'running' if core['running'] else 'stopped', pair_count,
+                streams.get('ssl', {}).get('messages_received', 0),
+                streams.get('ssl', {}).get('messages_published', 0),
+                streams.get('sst', {}).get('messages_received', 0),
+                streams.get('sst', {}).get('messages_published', 0),
+                streams.get('sss', {}).get('frames_reconstructed', 0),
+                streams.get('sss', {}).get('messages_published', 0)))
+
+    def _stop_core_process(self):
+        process = self._core_process
+        if process is None:
+            return
+        if process.poll() is None:
+            if rclpy.ok():
+                self.get_logger().info(
+                    'Stopping ODAS core process group (pid={})'.format(process.pid))
+            self.record_diagnostic_event('core_stop_requested', pid=process.pid)
+            try:
+                os.killpg(process.pid, signal.SIGINT)
+                process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                if rclpy.ok():
+                    self.get_logger().warning('ODAS core ignored SIGINT; sending SIGTERM')
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    if rclpy.ok():
+                        self.get_logger().error('ODAS core ignored SIGTERM; sending SIGKILL')
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=1.0)
+            except ProcessLookupError:
+                pass
+        if self._core_output_thread is not None:
+            self._core_output_thread.join(timeout=2.0)
+        returncode = process.poll()
+        self.record_diagnostic_event(
+            'core_stopped', returncode=returncode,
+            description=(None if returncode is None else
+                         self._describe_returncode(returncode)),
+            expected=self._unexpected_core_returncode is None)
 
     def _get_audio_queue_size(self):
         return self.get_parameter('audio_queue_size').get_parameter_value().integer_value
@@ -1101,17 +1314,14 @@ class OdasServerNode(rclpy.node.Node):
             self._sss_socket_server.start()
             self.get_logger().info("Sound Source Separation socket server started")
 
-        executable_args = ["ros2",
-                           "launch",
-                           "odas_ros",
-                           "odas_core_node.launch.xml",
-                           "configuration_path:=" + self._configuration_path]
-
-        odas_core_process = subprocess.Popen(executable_args, cwd=os.curdir)
-
         try:
+            self._start_core_process()
+            self._core_monitor_timer = self.create_timer(0.5, self._check_core_process)
+            self._health_timer = self.create_timer(
+                self._diagnostics_interval_s, self._log_health)
             rclpy.spin(self)
         finally:
+            self._stopping = True
             if self._raw_socket_server:
                 self._raw_socket_server.close()
             if self._ssl_socket_server:
@@ -1120,6 +1330,14 @@ class OdasServerNode(rclpy.node.Node):
                 self._sst_socket_server.close()
             if self._sss_socket_server:
                 self._sss_socket_server.close()
+            self._stop_core_process()
+            self.record_diagnostic_event(
+                'bridge_stop', uptime_s=round(
+                    time.monotonic() - self._started_monotonic, 3),
+                core_returncode=self._unexpected_core_returncode)
+            self._diagnostic_log.close()
 
-            odas_core_process.terminate()
-            odas_core_process.wait()
+        if self._unexpected_core_returncode is not None:
+            raise RuntimeError(
+                'odas_core_node failed with {}'.format(
+                    self._describe_returncode(self._unexpected_core_returncode)))

@@ -287,4 +287,15 @@ if(BUILD_TESTING)
     )
     add_test(NAME test_socket COMMAND test_socket)
 
+    add_executable(test_steer2demixing
+        test/test_steer2demixing.c
+    )
+    target_include_directories(test_steer2demixing PRIVATE
+        "${PROJECT_SOURCE_DIR}/include/odas"
+    )
+    target_link_libraries(test_steer2demixing PRIVATE
+        odas
+    )
+    add_test(NAME test_steer2demixing COMMAND test_steer2demixing)
+
 endif()

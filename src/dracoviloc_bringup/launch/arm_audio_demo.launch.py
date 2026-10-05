@@ -256,6 +256,8 @@ def generate_launch_description():
         launch_arguments={
             "use_sim_time": "false",
             "microphone_frame": "table_mic_link",
+            "diagnostics_log_path": LaunchConfiguration("odas_diagnostics_log_path"),
+            "diagnostics_interval_s": LaunchConfiguration("odas_diagnostics_interval_s"),
         }.items(),
         condition=IfCondition(audio_enabled))
 
@@ -268,6 +270,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "audio_enabled", default_value="false",
             description="Launch fixed-table UMA16v2/ODAS localization."),
+        DeclareLaunchArgument(
+            "odas_diagnostics_log_path", default_value="",
+            description="Optional JSONL path for ODAS core, socket, and flow diagnostics."),
+        DeclareLaunchArgument(
+            "odas_diagnostics_interval_s", default_value="10.0",
+            description="Seconds between ODAS health snapshots."),
         DeclareLaunchArgument(
             "tracking_mode", default_value="off",
             choices=["off", "direct_gre", "direct_ast", "direct_either",

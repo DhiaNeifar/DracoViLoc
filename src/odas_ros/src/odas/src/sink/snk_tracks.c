@@ -27,6 +27,7 @@
     *
     */
     
+    #include <errno.h>
     #include <sink/snk_tracks.h>
 
     snk_tracks_obj * snk_tracks_construct(const snk_tracks_cfg * snk_tracks_config, const msg_tracks_cfg * msg_tracks_config) {
@@ -158,7 +159,9 @@
 
         if ( (connect(obj->sid, (struct sockaddr *) &(obj->sserver), sizeof(obj->sserver))) < 0 ) {
 
-            printf("Sink tracks: Cannot connect to server\n");
+            fprintf(stderr,
+                    "Sink tracks: Cannot connect to %s:%u: errno=%d (%s)\n",
+                    obj->interface->ip, obj->interface->port, errno, strerror(errno));
             exit(EXIT_FAILURE);
 
         }   
@@ -326,7 +329,10 @@
     void snk_tracks_process_interface_socket(snk_tracks_obj * obj) {
 
         if (socket_send_all(obj->sid, obj->buffer, obj->bufferSize) != 0) {
-            printf("Sink tracks: Could not send message.\n");
+            fprintf(stderr,
+                    "Sink tracks: Could not send %u bytes to %s:%u: errno=%d (%s), timeStamp=%llu\n",
+                    obj->bufferSize, obj->interface->ip, obj->interface->port,
+                    errno, strerror(errno), obj->in->timeStamp);
             exit(EXIT_FAILURE);
         }  
 

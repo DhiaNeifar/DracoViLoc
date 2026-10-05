@@ -10,6 +10,8 @@
   <arg name="force_publish_tf" default="false"/>
   <arg name="use_echo_cancellation" default="false"/>
   <arg name="echo_cancelled_signal_topic" default="ec_signal"/>
+  <arg name="diagnostics_log_path" default=""/>
+  <arg name="diagnostics_interval_s" default="10.0"/>
 
   <!-- ODAS -->
   <group>
@@ -17,11 +19,15 @@
       <param name="configuration_path" value="$(var configuration_path)"/>
       <param name="frame_id" value="$(var frame_id)"/>
       <param name="audio_queue_size" value="$(var audio_queue_size)"/>
+      <param name="diagnostics_log_path" value="$(var diagnostics_log_path)"/>
+      <param name="diagnostics_interval_s" value="$(var diagnostics_interval_s)"/>
     </node>
     <node if="$(var use_echo_cancellation)" pkg="odas_ros" exec="odas_echocancel_filter_server_node.py" name="odas_server_node">
       <param name="configuration_path" value="$(var configuration_path)"/>
       <param name="frame_id" value="$(var frame_id)"/>
       <param name="audio_queue_size" value="$(var audio_queue_size)"/>
+      <param name="diagnostics_log_path" value="$(var diagnostics_log_path)"/>
+      <param name="diagnostics_interval_s" value="$(var diagnostics_interval_s)"/>
 
       <remap from="ec_signal" to="$(var echo_cancelled_signal_topic)"/>
     </node>

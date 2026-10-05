@@ -27,6 +27,7 @@
     *
     */
     
+    #include <errno.h>
     #include <sink/snk_pots.h>
 
     snk_pots_obj * snk_pots_construct(const snk_pots_cfg * snk_pots_config, const msg_pots_cfg * msg_pots_config) {
@@ -156,7 +157,9 @@
 
         if ( (connect(obj->sid, (struct sockaddr *) &(obj->sserver), sizeof(obj->sserver))) < 0 ) {
 
-            printf("Sink pots: Cannot connect to server\n");
+            fprintf(stderr,
+                    "Sink pots: Cannot connect to %s:%u: errno=%d (%s)\n",
+                    obj->interface->ip, obj->interface->port, errno, strerror(errno));
             exit(EXIT_FAILURE);
 
         }  
@@ -330,7 +333,10 @@
     void snk_pots_process_interface_socket(snk_pots_obj * obj) {
 
         if (socket_send_all(obj->sid, obj->buffer, obj->bufferSize) != 0) {
-            printf("Sink pots: Could not send message.\n");
+            fprintf(stderr,
+                    "Sink pots: Could not send %u bytes to %s:%u: errno=%d (%s), timeStamp=%llu\n",
+                    obj->bufferSize, obj->interface->ip, obj->interface->port,
+                    errno, strerror(errno), obj->in->timeStamp);
             exit(EXIT_FAILURE);
         }        
 

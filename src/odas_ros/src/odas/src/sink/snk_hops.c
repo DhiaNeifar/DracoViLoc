@@ -27,6 +27,7 @@
     *
     */
     
+    #include <errno.h>
     #include <sink/snk_hops.h>
 
     snk_hops_obj * snk_hops_construct(const snk_hops_cfg * snk_hops_config, const msg_hops_cfg * msg_hops_config) {
@@ -154,7 +155,9 @@
 
         if ( (connect(obj->sid, (struct sockaddr *) &(obj->sserver), sizeof(obj->sserver))) < 0 ) {
 
-            printf("Sink hops: Cannot connect to server\n");
+            fprintf(stderr,
+                    "Sink hops: Cannot connect to %s:%u: errno=%d (%s)\n",
+                    obj->interface->ip, obj->interface->port, errno, strerror(errno));
             exit(EXIT_FAILURE);
 
         }          
@@ -316,7 +319,10 @@
     void snk_hops_process_interface_socket(snk_hops_obj * obj) {
 
         if (socket_send_all(obj->sid, obj->buffer, obj->bufferSize) != 0) {
-            printf("Sink hops: Could not send message.\n");
+            fprintf(stderr,
+                    "Sink hops: Could not send %u bytes to %s:%u: errno=%d (%s), timeStamp=%llu\n",
+                    obj->bufferSize, obj->interface->ip, obj->interface->port,
+                    errno, strerror(errno), obj->in->timeStamp);
             exit(EXIT_FAILURE);
         }
 

@@ -11,6 +11,8 @@ from launch_ros.actions import Node, SetParameter
 def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     microphone_frame = LaunchConfiguration("microphone_frame")
+    diagnostics_log_path = LaunchConfiguration("diagnostics_log_path")
+    diagnostics_interval_s = LaunchConfiguration("diagnostics_interval_s")
     odas_share = get_package_share_directory("odas_ros")
     odas = IncludeLaunchDescription(
         AnyLaunchDescriptionSource(
@@ -23,6 +25,8 @@ def generate_launch_description():
             "visualization": "true",
             "rviz": "false",
             "force_publish_tf": "false",
+            "diagnostics_log_path": diagnostics_log_path,
+            "diagnostics_interval_s": diagnostics_interval_s,
         }.items(),
     )
     return LaunchDescription([
@@ -32,6 +36,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "microphone_frame", default_value="odas_link",
             description="TF frame in which ODAS microphone directions are expressed."),
+        DeclareLaunchArgument(
+            "diagnostics_log_path", default_value="",
+            description="Optional ODAS JSONL diagnostic log path."),
+        DeclareLaunchArgument(
+            "diagnostics_interval_s", default_value="10.0",
+            description="Seconds between ODAS health snapshots."),
         SetParameter(name="use_sim_time", value=use_sim_time),
         odas
        # Node(

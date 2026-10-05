@@ -75,6 +75,13 @@
 
             if (tracks->ids[iSep] != 0) {
 
+                /* Start every active source from a defined state. Disabled
+                 * microphone channels must remain zero for every frequency
+                 * bin, including the valid all-masks-disabled case. */
+                memset(demixings->array[iSep],
+                       0x00,
+                       sizeof(float) * obj->halfFrameSize * obj->nChannels * 2);
+
                 memset(obj->gains2, 0x00, sizeof(float) * obj->halfFrameSize);
 
                 for (iBin = 0; iBin < obj->halfFrameSize; iBin++) {
@@ -129,13 +136,7 @@
 
                         }
 
-                    }       
-                    else {
-
-                        demixings->array[iSep][iSampleBC * 2 + 0] = 0.0f;
-                        demixings->array[iSep][iSampleBC * 2 + 1] = 0.0f;
-
-                    }             
+                    }
 
                 }
 
@@ -697,4 +698,3 @@
         // Not implemented yet
 
     }
-

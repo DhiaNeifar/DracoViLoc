@@ -27,6 +27,7 @@
     *
     */
     
+    #include <errno.h>
     #include <sink/snk_categories.h>
 
     snk_categories_obj * snk_categories_construct(const snk_categories_cfg * snk_categories_config, const msg_categories_cfg * msg_categories_config) {
@@ -153,7 +154,9 @@
 
         if ( (connect(obj->sid, (struct sockaddr *) &(obj->sserver), sizeof(obj->sserver))) < 0 ) {
 
-            printf("Sink categories: Cannot connect to server\n");
+            fprintf(stderr,
+                    "Sink categories: Cannot connect to %s:%u: errno=%d (%s)\n",
+                    obj->interface->ip, obj->interface->port, errno, strerror(errno));
             exit(EXIT_FAILURE);
 
         }          
@@ -321,7 +324,10 @@
     void snk_categories_process_interface_socket(snk_categories_obj * obj) {
 
         if (send(obj->sid, obj->buffer, obj->bufferSize, 0) < 0) {
-            printf("Sink categories: Could not send message.\n");
+            fprintf(stderr,
+                    "Sink categories: Could not send %u bytes to %s:%u: errno=%d (%s), timeStamp=%llu\n",
+                    obj->bufferSize, obj->interface->ip, obj->interface->port,
+                    errno, strerror(errno), obj->in->timeStamp);
             exit(EXIT_FAILURE);
         }
 
