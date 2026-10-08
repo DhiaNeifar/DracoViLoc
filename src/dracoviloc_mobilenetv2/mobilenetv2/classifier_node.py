@@ -15,7 +15,7 @@ from audio_utils_msgs.msg import AudioFrame
 from geometry_msgs.msg import Vector3Stamped
 from odas_ros_msgs.msg import OdasSstArrayStamped
 
-from processing import ChannelState, INPUT_RATE, decode_audio
+from processing import BearingGate, ChannelState, INPUT_RATE, decode_audio
 
 
 def seconds(stamp):
@@ -28,6 +28,9 @@ class MobileNetV2Classifier(Node):
         self.args = args
         self.channels = [ChannelState(args.threshold, args.votes_required, args.vote_window)
                          for _ in range(args.channels)]
+        self.bearing_gate = BearingGate(
+            enabled=args.bearing_gate, max_jump_deg=args.max_bearing_jump_deg,
+            confirm=args.bearing_confirm, timeout=args.bearing_timeout)
         self.latest_sst = None
         self.last_audio_stamp = None
         self.audio_seen = 0
@@ -139,6 +142,18 @@ class MobileNetV2Classifier(Node):
                 norm = np.linalg.norm(direction)
                 if not np.isfinite(direction).all() or not math.isfinite(norm) or norm < 1e-6:
                     continue
+                publish, retargeted = self.bearing_gate.accept(
+                    direction / norm, self._now())
+                if not publish:
+                    self.get_logger().info(
+                        f'bearing gate rejected ch={channel} '
+                        f'angle={self.bearing_gate.last_reject_angle:.1f} deg '
+                        f'reject_count={self.bearing_gate.reject_count}',
+                        throttle_duration_sec=1.0)
+                    continue
+                if retargeted:
+                    self.get_logger().info(
+                        f'bearing gate retargeted to new bearing on ch={channel}')
                 out = Vector3Stamped()
                 out.header.frame_id = self.latest_sst.header.frame_id
                 out.header.stamp = Time(seconds=window_end).to_msg()
@@ -171,8 +186,24 @@ def parse_args(argv):
     parser.add_argument('--always-classify', choices=['true', 'false'], default='false')
     parser.add_argument('--sst-timeout', type=float, default=0.25)
     parser.add_argument('--max-audio-age', type=float, default=0.5)
+    parser.add_argument('--bearing-gate', choices=['true', 'false'], default='true',
+                        help='reject published bearings that jump more than '
+                             '--max-bearing-jump-deg from the last accepted one '
+                             'unless a consistent challenger confirms')
+    parser.add_argument('--max-bearing-jump-deg', type=float, default=60.0)
+    parser.add_argument('--bearing-confirm', type=int, default=3,
+                        help='consecutive consistent challengers needed to retarget')
+    parser.add_argument('--bearing-timeout', type=float, default=2.0,
+                        help='seconds of silence after which the gate re-arms')
     args = parser.parse_args(argv)
+    args.bearing_gate = args.bearing_gate == 'true'
     args.always_classify = args.always_classify == 'true'
+    if args.channels <= 0 or not 0 <= args.min_activity <= 1:
+        parser.error('channels must be positive and min_activity must be in [0, 1]')
+    if args.bearing_confirm < 1 or args.max_bearing_jump_deg <= 0 \
+            or not math.isfinite(args.bearing_timeout) or args.bearing_timeout <= 0:
+        parser.error('bearing_confirm must be >= 1, max_bearing_jump_deg > 0, '
+                     'bearing_timeout finite and positive')
     if args.channels <= 0 or not 0 <= args.min_activity <= 1:
         parser.error('channels must be positive and min_activity must be in [0, 1]')
     if not (math.isfinite(args.sst_timeout) and args.sst_timeout > 0

@@ -1,4 +1,5 @@
 """Pure CPU streaming preparation for the model's embedded audio frontend."""
+import math
 from collections import deque
 
 import numpy as np
@@ -83,3 +84,83 @@ class ChannelState:
             raise ValueError('model produced an invalid probability')
         self.votes.append(probability >= self.threshold)
         return sum(self.votes) >= self.votes_required
+
+
+class BearingGate:
+    """Rejects bearings that jump discontinuously from the last accepted one.
+
+    ODAS can retarget an SST track to a wall reflection while keeping the same
+    track id, so a track-id change is not a sufficient guard. This gate filters
+    the *published* direction stream: a candidate more than max_jump_deg away
+    from the last accepted bearing is held back unless a consistent challenger
+    (same 15-degree cone every time) persists for `confirm` consecutive
+    accepts - then it retargets. Rejection is direction-agnostic: jittery
+    reflections never accumulate, a real moved target confirms quickly.
+
+    Stateful but ROS-free; `now` is any monotonic seconds float.
+    """
+
+    REJECT_CONE_COS = math.cos(math.radians(15.0))
+
+    def __init__(self, enabled=True, max_jump_deg=60.0, confirm=3, timeout=2.0):
+        self.enabled = enabled
+        self.max_jump_cos = math.cos(math.radians(max_jump_deg))
+        self.confirm = confirm
+        self.timeout = timeout
+        self.last_dir = None
+        self.last_time = None
+        self.reject_dir = None
+        self.reject_count = 0
+        self.last_reject_angle = None
+
+    @staticmethod
+    def _normalize(vector):
+        norm = math.sqrt(sum(float(c) * float(c) for c in vector))
+        if not math.isfinite(norm) or norm < 1e-9:
+            return None
+        return tuple(float(c) / norm for c in vector)
+
+    @staticmethod
+    def _cos(a, b):
+        return sum(x * y for x, y in zip(a, b))
+
+    def accept(self, direction, now):
+        """Decide whether `direction` may be published.
+
+        Returns (publish, retargeted). `retargeted` is True only when a
+        persistent challenger displaced the last accepted bearing.
+        """
+        candidate = self._normalize(direction)
+        if candidate is None:
+            return False, False
+        if (not self.enabled or self.last_dir is None
+                or now - self.last_time > self.timeout):
+            self.last_dir, self.last_time = candidate, now
+            self.reject_dir, self.reject_count = None, 0
+            self.last_reject_angle = None
+            return True, False
+
+        if self._cos(candidate, self.last_dir) >= self.max_jump_cos:
+            # Small step: accept and ease the anchor halfway toward it so
+            # slow drift cannot ratchet the reference away from the target.
+            self.last_dir = self._normalize(tuple(
+                0.5 * candidate[i] + 0.5 * self.last_dir[i] for i in range(3)))
+            self.last_time = now
+            self.reject_dir, self.reject_count = None, 0
+            self.last_reject_angle = None
+            return True, False
+
+        self.last_reject_angle = math.degrees(
+            math.acos(max(-1.0, min(1.0, self._cos(candidate, self.last_dir)))))
+        if (self.reject_dir is not None
+                and self._cos(candidate, self.reject_dir) >= self.REJECT_CONE_COS):
+            self.reject_count += 1
+        else:
+            self.reject_dir, self.reject_count = candidate, 1
+
+        if self.reject_count >= self.confirm:
+            self.last_dir, self.last_time = candidate, now
+            self.reject_dir, self.reject_count = None, 0
+            self.last_reject_angle = None
+            return True, True
+        return False, False

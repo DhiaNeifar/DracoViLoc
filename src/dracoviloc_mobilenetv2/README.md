@@ -36,6 +36,16 @@ ODAS must already be publishing. Standalone arguments are `engine_path`,
 `vote_window` (2), `min_activity` (0.10), `always_classify` (false),
 `sst_timeout` (0.25 s), and `max_audio_age` (0.5 s).
 
+A bearing gate (enabled by default) protects the published direction stream
+against ODAS track retargeting: ODAS can keep a track id while its bearing
+jumps to a wall reflection, which a track-id change alone would not catch.
+A classified bearing more than `max_bearing_jump_deg` (60 deg) away from the
+last published one is held back unless a consistent challenger confirms
+(`bearing_confirm`, 3 consecutive windows within a 15 deg cone); after
+`bearing_timeout` (2 s) without a published bearing the gate re-arms. Set
+`bearing_gate:=false` to disable. AST and GRE apply the same gate on their
+`/ast/direction` and `/gre/direction` outputs.
+
 ## Integrated modes
 
 Use `audio_enabled:=true mobilenetv2_enabled:=true` in the main bringup.

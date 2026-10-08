@@ -80,6 +80,7 @@ typed fields.
 
 import argparse
 import json
+import math
 import sys
 import traceback
 from pathlib import Path
@@ -109,6 +110,86 @@ HOP_SAMPLES = 8000          # 0.5 s
 # /sss fS is 44100 in configuration.cfg; 16000/44100 reduces to 160/441.
 RESAMPLE_UP = 160
 RESAMPLE_DOWN = 441
+
+
+class BearingGate:
+    """Rejects bearings that jump discontinuously from the last accepted one.
+
+    ODAS can retarget an SST track to a wall reflection while keeping the same
+    track id, so a track-id change is not a sufficient guard. This gate filters
+    the *published* direction stream: a candidate more than max_jump_deg away
+    from the last accepted bearing is held back unless a consistent challenger
+    (same 15-degree cone every time) persists for `confirm` consecutive
+    accepts - then it retargets. Rejection is direction-agnostic: jittery
+    reflections never accumulate, a real moved target confirms quickly.
+
+    Stateful but ROS-free; `now` is any monotonic seconds float.
+    """
+
+    REJECT_CONE_COS = math.cos(math.radians(15.0))
+
+    def __init__(self, enabled=True, max_jump_deg=60.0, confirm=3, timeout=2.0):
+        self.enabled = enabled
+        self.max_jump_cos = math.cos(math.radians(max_jump_deg))
+        self.confirm = confirm
+        self.timeout = timeout
+        self.last_dir = None
+        self.last_time = None
+        self.reject_dir = None
+        self.reject_count = 0
+        self.last_reject_angle = None
+
+    @staticmethod
+    def _normalize(vector):
+        norm = math.sqrt(sum(float(c) * float(c) for c in vector))
+        if not math.isfinite(norm) or norm < 1e-9:
+            return None
+        return tuple(float(c) / norm for c in vector)
+
+    @staticmethod
+    def _cos(a, b):
+        return sum(x * y for x, y in zip(a, b))
+
+    def accept(self, direction, now):
+        """Decide whether `direction` may be published.
+
+        Returns (publish, retargeted). `retargeted` is True only when a
+        persistent challenger displaced the last accepted bearing.
+        """
+        candidate = self._normalize(direction)
+        if candidate is None:
+            return False, False
+        if (not self.enabled or self.last_dir is None
+                or now - self.last_time > self.timeout):
+            self.last_dir, self.last_time = candidate, now
+            self.reject_dir, self.reject_count = None, 0
+            self.last_reject_angle = None
+            return True, False
+
+        if self._cos(candidate, self.last_dir) >= self.max_jump_cos:
+            # Small step: accept and ease the anchor halfway toward it so
+            # slow drift cannot ratchet the reference away from the target.
+            self.last_dir = self._normalize(tuple(
+                0.5 * candidate[i] + 0.5 * self.last_dir[i] for i in range(3)))
+            self.last_time = now
+            self.reject_dir, self.reject_count = None, 0
+            self.last_reject_angle = None
+            return True, False
+
+        self.last_reject_angle = math.degrees(
+            math.acos(max(-1.0, min(1.0, self._cos(candidate, self.last_dir)))))
+        if (self.reject_dir is not None
+                and self._cos(candidate, self.reject_dir) >= self.REJECT_CONE_COS):
+            self.reject_count += 1
+        else:
+            self.reject_dir, self.reject_count = candidate, 1
+
+        if self.reject_count >= self.confirm:
+            self.last_dir, self.last_time = candidate, now
+            self.reject_dir, self.reject_count = None, 0
+            self.last_reject_angle = None
+            return True, True
+        return False, False
 
 
 class AstClassifierNode(Node):
@@ -147,6 +228,9 @@ class AstClassifierNode(Node):
 
         # --- state -------------------------------------------------------
         self.n_ch = args.channels
+        self.bearing_gate = BearingGate(
+            enabled=args.bearing_gate, max_jump_deg=args.max_bearing_jump_deg,
+            confirm=args.bearing_confirm, timeout=args.bearing_timeout)
         self.buffers = [np.zeros(0, dtype=np.float32) for _ in range(self.n_ch)]
         # State tracking for all channels
         self.streaks = [0] * self.n_ch
@@ -284,13 +368,26 @@ class AstClassifierNode(Node):
 
         if is_drone and self.latest_sst is not None and ch < len(self.latest_sst.sources):
             source = self.latest_sst.sources[ch]
-            out = Vector3Stamped()
-            out.header = self.latest_sst.header
-            out.header.stamp = stamp
-            out.vector.x = float(source.x)
-            out.vector.y = float(source.y)
-            out.vector.z = float(source.z)
-            self.pub.publish(out)
+            now = self.get_clock().now().nanoseconds * 1e-9
+            publish, retargeted = self.bearing_gate.accept(
+                (source.x, source.y, source.z), now)
+            if not publish:
+                self.get_logger().info(
+                    f'bearing gate rejected ch {ch}: '
+                    f'angle={self.bearing_gate.last_reject_angle:.1f} deg '
+                    f'reject_count={self.bearing_gate.reject_count}',
+                    throttle_duration_sec=1.0)
+            else:
+                if retargeted:
+                    self.get_logger().info(
+                        f'bearing gate retargeted to new bearing (ch {ch})')
+                out = Vector3Stamped()
+                out.header = self.latest_sst.header
+                out.header.stamp = stamp
+                out.vector.x = float(source.x)
+                out.vector.y = float(source.y)
+                out.vector.z = float(source.z)
+                self.pub.publish(out)
 
         # Multi-channel status display across all channels
         parts = []
@@ -330,8 +427,24 @@ def parse_args(argv):
                         'real track use a synthetic negative id and will not '
                         'gate the EKF. String, not a flag, so ExecuteProcess '
                         'launch arguments can pass it unconditionally.')
+    p.add_argument('--bearing-gate', type=str, default='true',
+                   choices=['true', 'false'],
+                   help='reject published bearings that jump more than '
+                        '--max-bearing-jump-deg from the last accepted one '
+                        'unless a consistent challenger confirms. String, not '
+                        'a flag, so ExecuteProcess can pass it unconditionally.')
+    p.add_argument('--max-bearing-jump-deg', type=float, default=60.0)
+    p.add_argument('--bearing-confirm', type=int, default=3,
+                   help='consecutive consistent challengers needed to retarget')
+    p.add_argument('--bearing-timeout', type=float, default=2.0,
+                   help='seconds of silence after which the gate re-arms')
     args = p.parse_args(argv)
     args.always_classify = args.always_classify == 'true'
+    args.bearing_gate = args.bearing_gate == 'true'
+    if args.bearing_confirm < 1 or args.max_bearing_jump_deg <= 0 \
+            or not math.isfinite(args.bearing_timeout) or args.bearing_timeout <= 0:
+        p.error('bearing_confirm must be >= 1, max_bearing_jump_deg > 0, '
+                'bearing_timeout finite and positive')
     return args
 
 

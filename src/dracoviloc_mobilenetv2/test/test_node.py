@@ -11,13 +11,14 @@ from odas_ros_msgs.msg import OdasSst, OdasSstArrayStamped
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'mobilenetv2'))
 from classifier_node import MobileNetV2Classifier, parse_args
-from processing import ChannelState
+from processing import BearingGate, ChannelState
 
 
 def make_node(always=False):
     node = object.__new__(MobileNetV2Classifier)
     node.args = parse_args(['--engine-path', 'unused', '--always-classify', str(always).lower()])
     node.channels = [ChannelState() for _ in range(4)]
+    node.bearing_gate = BearingGate()
     node.latest_sst = None
     node.last_audio_stamp = None
     node.audio_seen = node.windows_done = node.dropped_audio = 0
@@ -83,6 +84,39 @@ def test_diagnostic_classification_is_not_actionable():
     feed(node, 200, track=0)
     assert node.windows_done >= 12
     assert not node.messages
+
+
+def test_same_track_bearing_jump_is_gated():
+    # ODAS keeps the track id when it retargets to a reflection - only an
+    # implausible bearing jump marks the handover. The published stream must
+    # hold its last direction until the challenger confirms.
+    node = object.__new__(MobileNetV2Classifier)
+    node.args = parse_args(['--engine-path', 'unused', '--bearing-timeout', '30.0'])
+    node.channels = [ChannelState() for _ in range(4)]
+    node.bearing_gate = BearingGate(timeout=30.0)
+    node.latest_sst = None
+    node.last_audio_stamp = None
+    node.audio_seen = node.windows_done = node.dropped_audio = 0
+    node.engine = SimpleNamespace(infer=lambda w: np.array([0.1, 0.9]))
+    node.messages = []
+    node.publisher = SimpleNamespace(publish=node.messages.append)
+    node.test_time = 100.0
+    node._now = lambda: node.test_time
+    node.get_logger = lambda: SimpleNamespace(info=lambda *a, **k: None,
+                                              warning=lambda *a, **k: None)
+
+    feed(node, 190, track=1, vector=(3.0, 4.0, 0.0))
+    assert len(node.messages) >= 1
+    accepted = len(node.messages)
+
+    feed(node, 100, track=1, vector=(-4.0, 3.0, 0.0))   # 90 deg, same id
+    assert len(node.messages) == accepted               # held, not published
+
+    feed(node, 200, track=1, vector=(-4.0, 3.0, 0.0))   # persists -> retarget
+    assert len(node.messages) > accepted
+    out = node.messages[-1]
+    np.testing.assert_allclose(
+        [out.vector.x, out.vector.y, out.vector.z], [-0.8, 0.6, 0.0], atol=1e-6)
 
 
 def test_stale_sst_resets_state():

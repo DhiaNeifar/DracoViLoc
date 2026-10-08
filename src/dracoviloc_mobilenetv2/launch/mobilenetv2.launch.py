@@ -19,6 +19,8 @@ def generate_launch_description():
         'channels': '4', 'threshold': '0.75', 'votes_required': '2',
         'vote_window': '2', 'min_activity': '0.10', 'always_classify': 'false',
         'sst_timeout': '0.25', 'max_audio_age': '0.5',
+        'bearing_gate': 'true', 'max_bearing_jump_deg': '60.0',
+        'bearing_confirm': '3', 'bearing_timeout': '2.0',
     }
     cmd = [LaunchConfiguration('venv_python'), '-u',
            os.path.join(share, 'mobilenetv2', 'classifier_node.py')]

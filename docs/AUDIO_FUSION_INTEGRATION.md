@@ -161,6 +161,21 @@ reporting healthy.
 unit direction, never a range. This is sufficient for slew-to-cue — a target
 at 5 m and one at 50 m on the same bearing need the same arm pose.
 
+### Bearing gate on the classifier outputs
+
+Each audio classifier (`ast_classifier_node`, `gre_classifier_node`,
+`mobilenetv2_classifier_node`) gates its published direction stream
+(`/ast/direction`, `/gre/direction`, `/mobilenetv2/direction`) for bearing
+continuity. ODAS can retarget an SST track to a wall reflection while keeping
+the same track id, and reverberant drone audio still classifies as a drone —
+without a gate the published bearing snaps to the reflection the moment the
+direct path weakens (a far-drone failure mode observed in testing). A
+classified bearing more than `max_bearing_jump_deg` (default 60 deg) from the
+last published one is held back unless a consistent challenger (same 15 deg
+cone) persists for `bearing_confirm` (3) consecutive windows, in which case
+the gate retargets; after `bearing_timeout` (2 s) of silence it re-arms.
+`bearing_gate:=false` disables it per classifier.
+
 ---
 
 ## Calibrating the microphone yaw
