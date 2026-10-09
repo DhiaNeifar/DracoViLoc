@@ -4,6 +4,33 @@ Isaac ROS YOLO runs inside NVIDIA's Isaac ROS development container.
 DracoViLoc/RViz runs on the host. The two processes communicate through ROS 2
 DDS; the host launch must not source or include the container workspace.
 
+## Source-of-truth and distribution policy
+
+`DracoViLoc/isaac_ros/` is the source of truth for every project-owned Isaac
+ROS package, tool, portable model, and launch default. Do not make permanent
+changes directly under `~/workspaces/isaac_ros-dev/src`; that workspace is a
+generated deployment target and may be overwritten. Make and validate changes
+in DracoViLoc first, commit and push them, then deploy them with
+`scripts/deploy_isaac_ros.sh` and build inside the Isaac ROS container.
+
+Preview exactly what deployment will change:
+
+```bash
+cd ~/DracoViLoc
+./scripts/deploy_isaac_ros.sh --dry-run ~/workspaces/isaac_ros-dev
+```
+
+Deploy the canonical files:
+
+```bash
+./scripts/deploy_isaac_ros.sh ~/workspaces/isaac_ros-dev
+```
+
+On another machine, clone DracoViLoc with Git LFS, create the NVIDIA Isaac ROS
+workspace for that platform, run the same deployment command, and then run
+`/workspaces/isaac_ros-dev/scripts/build_dracoviloc_yolo.sh` in its container.
+TensorRT `.plan` files remain machine-specific and must be regenerated there.
+
 The authoritative trained checkpoint is stored under:
 
 ```text
@@ -38,9 +65,10 @@ cd ~/DracoViLoc
 ```
 
 This command overwrites the corresponding package directories in the Isaac
-workspace. Before using it on an already validated installation, review the
-diff and make sure any live workspace calibration changes have first been
-copied back into `isaac_ros/packages/`.
+workspace. Use `--dry-run` first when reviewing an existing installation. If
+an emergency diagnostic edit was made in the deployment workspace, reproduce
+and validate it in `isaac_ros/packages/` before deploying; the workspace copy
+is never the authoritative version.
 
 The deployment overlay can contain an older generic
 `drone_yolo11n_best` model. The explicitly versioned checkpoint copied from
@@ -59,7 +87,10 @@ Confirm the acoustic camera is visible inside it:
 v4l2-ctl --list-devices
 ```
 
-The validated camera device is `/dev/video0`.
+The launch defaults to `camera:=auto`, which selects the primary (interface
+index 0) icSpring camera integrated with the microphone array regardless of
+its `/dev/videoN` assignment. An explicit device remains available as an
+override.
 
 ## 3. Install container dependencies once
 
@@ -179,7 +210,7 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 
 ros2 launch isaac_ros_yolo_direction yolo_camera.launch.py \
-  camera:=/dev/video0 \
+  camera:=auto \
   model_path:=/workspaces/isaac_ros-dev/models/drone_yolo11n_20260825_best.onnx \
   engine_path:=/workspaces/isaac_ros-dev/models/drone_yolo11n_20260825_best.plan \
   width:=640 \
