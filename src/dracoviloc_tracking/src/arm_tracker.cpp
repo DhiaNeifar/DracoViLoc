@@ -33,7 +33,7 @@
 namespace fs = std::filesystem;
 
 // =============================================================================
-// arm_audio_tracker  -  audio servo driven by the EKF fused bearing
+// arm_tracker  -  audio servo driven by the EKF fused bearing
 //
 // WHAT CHANGED AND WHY
 // ====================
@@ -75,17 +75,18 @@ namespace fs = std::filesystem;
 // smoothing_alpha to 1.0 to disable it and follow the EKF exactly.
 // =============================================================================
 
-class ArmAudioTracker : public rclcpp::Node {
+class ArmTracker : public rclcpp::Node {
 public:
-  ArmAudioTracker() : Node("arm_audio_tracker") {
+  ArmTracker() : Node("arm_tracker") {
     target_timeout_ = declare_parameter("target_timeout", 0.75);
     smoothing_alpha_ = declare_parameter("smoothing_alpha", 0.50);
-    angular_deadband_ = declare_parameter("angular_deadband", 0.02);
-    angular_deadband_exit_ = declare_parameter("angular_deadband_exit", 0.01);
+    // Target-update deadband: the solved aim point only replaces the
+    // currently commanded one when it moves by more than this. There is no
+    // separate enter/exit threshold anymore -- Ruckig is driven continuously
+    // and settles on its own, so there is nothing to chatter between.
+    angular_deadband_ = declare_parameter("angular_deadband", 0.003);
     motion_penalty_ = declare_parameter("motion_penalty", 0.015);
-    // command_horizon is retained as a declared parameter so older launch
-    // commands remain valid. Tracking no longer sends short trajectories.
-    command_horizon_ = declare_parameter("command_horizon", 0.20);
+    servo_log_path_ = declare_parameter("servo_log_path", std::string(""));
     command_rate_hz_ = declare_parameter("command_rate_hz", 100.0);
     max_velocity_ = declare_parameter("max_velocity", 2.50);
     max_acceleration_ = declare_parameter("max_acceleration", 12.0);
@@ -109,15 +110,13 @@ public:
     require_home_ = declare_parameter("require_home_before_tracking", true);
     home_duration_s_ = declare_parameter("home_duration_s", 12.0);
     home_tolerance_rad_ = declare_parameter("home_tolerance_rad", 0.035);
-    if (angular_deadband_exit_ < 0.0 ||
-        angular_deadband_exit_ >= angular_deadband_) {
-      throw std::invalid_argument(
-        "angular_deadband_exit must be non-negative and smaller than angular_deadband");
+    if (angular_deadband_ < 0.0) {
+      throw std::invalid_argument("angular_deadband must be non-negative");
     }
-    if (command_horizon_ <= 0.0 || max_velocity_ <= 0.0 ||
-        max_acceleration_ <= 0.0 || max_jerk_ <= 0.0 || max_tracking_error_ <= 0.0) {
+    if (max_velocity_ <= 0.0 || max_acceleration_ <= 0.0 ||
+        max_jerk_ <= 0.0 || max_tracking_error_ <= 0.0) {
       throw std::invalid_argument(
-        "command_horizon, max_velocity, max_acceleration, max_jerk, and "
+        "max_velocity, max_acceleration, max_jerk, and "
         "max_tracking_error must be positive");
     }
     if (command_rate_hz_ < 20.0 || command_rate_hz_ > 200.0) {
@@ -133,6 +132,7 @@ public:
     }
     open_ekf_direction_log();
     open_yolo_direction_log();
+    open_servo_log();
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -337,6 +337,58 @@ private:
     yolo_direction_log_.flush();
   }
 
+  void open_servo_log()
+  {
+    if (servo_log_path_.empty()) {
+      return;
+    }
+    const fs::path path(servo_log_path_);
+    if (!path.parent_path().empty()) {
+      fs::create_directories(path.parent_path());
+    }
+    const bool write_header = !fs::exists(path) || fs::file_size(path) == 0;
+    servo_log_.open(path, std::ios::app);
+    if (!servo_log_) {
+      throw std::runtime_error("cannot open servo log: " + path.string());
+    }
+    if (write_header) {
+      servo_log_
+        << "time_sec,control_state,control_interface,target_available,"
+        << "target_q1,target_q4,actual_q1,actual_q4,"
+        << "command_q1,command_q4,output_velocity_q1,output_velocity_q4,"
+        << "pointing_error_deg,solution_error_deg,ruckig_result\n";
+    }
+    servo_log_ << std::setprecision(17);
+    servo_log_.flush();
+    RCLCPP_INFO(get_logger(), "Logging every servo tick to %s", path.c_str());
+  }
+
+  void write_servo_log(
+    ControlState control_state, bool target_available,
+    const std::array<double, 6> & target, const std::array<double, 6> & actual,
+    double pointing_error, double solution_error, ruckig::Result result)
+  {
+    if (!servo_log_.is_open()) {
+      return;
+    }
+    const char * state =
+      control_state == ControlState::Tracking ? "tracking" :
+      (control_state == ControlState::Stopping ? "stopping" : "trajectory");
+    const char * interface =
+      servo_input_.control_interface == ruckig::ControlInterface::Velocity ?
+      "velocity" : "position";
+    servo_log_
+      << now().seconds() << ',' << state << ',' << interface << ','
+      << (target_available ? 1 : 0) << ','
+      << target[0] << ',' << target[3] << ','
+      << actual[0] << ',' << actual[3] << ','
+      << servo_command_[0] << ',' << servo_command_[3] << ','
+      << servo_output_.new_velocity[0] << ',' << servo_output_.new_velocity[3] << ','
+      << pointing_error * 180.0 / M_PI << ',' << solution_error * 180.0 / M_PI << ','
+      << static_cast<int>(result) << '\n';
+    servo_log_.flush();
+  }
+
   bool publish_trajectory(
     const std::array<double, 6> & target, double duration_s,
     const std::array<double, 6> & endpoint_velocity = {})
@@ -393,6 +445,7 @@ private:
   void initialize_servo(const std::array<double, 6> & position)
   {
     configure_fixed_pose(position);
+    servo_input_.control_interface = ruckig::ControlInterface::Position;
     servo_input_.current_position = position;
     servo_input_.current_velocity.fill(0.0);
     servo_input_.current_acceleration.fill(0.0);
@@ -425,7 +478,6 @@ private:
         return;
       }
       have_direction_ = false;
-      motion_latched_ = false;
       home_requested_ = true;
       home_reached_ = false;
       current = current_;
@@ -475,7 +527,6 @@ private:
           return;
         }
         have_direction_ = false;
-        motion_latched_ = false;
         seed = current_;
       } else {
         if (control_state_ == ControlState::Trajectory) {
@@ -490,8 +541,7 @@ private:
         }
         control_state_ = ControlState::Stopping;
         have_direction_ = false;
-        motion_latched_ = false;
-        set_stopping_target();
+        begin_velocity_stop();
         response.success = true;
         response.message = "Tracking is decelerating; arm_controller will reactivate automatically";
         RCLCPP_WARN(get_logger(), "Tracking stop requested; decelerating before controller switch");
@@ -734,9 +784,6 @@ private:
   void configure_fixed_pose(const std::array<double, 6> & joints)
   {
     fixed_ = joints;
-    motion_latched_ = false;
-    has_prev_solve_ = false;
-    ff_velocity_.fill(0.0);
     wrist_lookup_.clear();
     wrist_lookup_.reserve(160);
     for (double q4 = -M_PI_2; q4 <= M_PI_2; q4 += 0.02) {
@@ -807,23 +854,16 @@ private:
     return best;
   }
 
-  void set_stopping_target()
+  // Jerk-limited stop: let Ruckig itself compute the minimum-time deceleration
+  // to zero velocity, rather than precomputing a stop distance from
+  // acceleration alone (v^2/2a), which understates the real stopping
+  // distance whenever the jerk limit is the binding constraint and causes
+  // the arm to overshoot and swing back. Safe to call every tick; idempotent.
+  void begin_velocity_stop()
   {
-    servo_input_.target_position = servo_input_.current_position;
-    for (const std::size_t index : active_joints_) {
-      const double velocity = servo_input_.current_velocity[index];
-      const double distance = velocity * std::abs(velocity) /
-        (2.0 * max_acceleration_);
-      servo_input_.target_position[index] = std::clamp(
-        servo_input_.current_position[index] + distance,
-        index == 0 ? -3.0543 : -M_PI_2,
-        index == 0 ? 3.0543 : M_PI_2);
-    }
-    ff_velocity_.fill(0.0);
-    has_prev_solve_ = false;
+    servo_input_.control_interface = ruckig::ControlInterface::Velocity;
     servo_input_.target_velocity.fill(0.0);
     servo_input_.target_acceleration.fill(0.0);
-    stopping_target_set_ = true;
   }
 
   bool finish_tracking_controller_switch()
@@ -837,7 +877,6 @@ private:
     }
     std::lock_guard<std::mutex> lock(mutex_);
     control_state_ = ControlState::Trajectory;
-    stopping_target_set_ = false;
     RCLCPP_WARN(get_logger(),
       "Tracking disabled cleanly; arm_controller is active for MoveIt and home");
     return true;
@@ -880,67 +919,42 @@ private:
       RCLCPP_ERROR(get_logger(),
         "Measured arm fell behind servo by %.3f rad; stopping tracking safely",
         std::max(q1_tracking_error, q4_tracking_error));
-      control_state_ = ControlState::Stopping;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        control_state_ = ControlState::Stopping;
+      }
       control_state = ControlState::Stopping;
-      motion_latched_ = false;
-      set_stopping_target();
     }
 
-    auto target = servo_input_.current_position;
     const double pointing_error = have_direction ?
       angle(microphone_normal(actual), desired) : 0.0;
 
-    // Use separate enter/exit thresholds so a noisy bearing near the
-    // deadband cannot toggle the arm between chase and hold every cycle.
-    if (control_state != ControlState::Tracking || !target_available) {
-      motion_latched_ = false;
-    } else if (motion_latched_) {
-      if (pointing_error <= angular_deadband_exit_) {
-        motion_latched_ = false;
+    // Continuous position-and-velocity tracking: Ruckig always holds a
+    // target and settles on it on its own, so there is no separate
+    // chase/hold state to chatter between. The commanded aim point only
+    // moves when the solved target actually changes by more than the
+    // deadband, which keeps measurement noise from causing constant
+    // micro-retargeting.
+    const bool should_track = control_state == ControlState::Tracking && target_available;
+    if (should_track) {
+      const auto candidate = solve(servo_input_.current_position, desired);
+      const double update_error = angle(
+        microphone_normal(candidate), microphone_normal(servo_input_.target_position));
+      if (update_error >= angular_deadband_) {
+        servo_input_.target_position = candidate;
       }
-    } else if (pointing_error >= angular_deadband_) {
-      motion_latched_ = true;
-    }
-
-    if (motion_latched_) {
-      target = solve(servo_input_.current_position, desired);
-      servo_input_.target_position = target;
-      const auto now_time = now();
-      if (!has_prev_solve_) {
-        ff_velocity_.fill(0.0);
-        servo_input_.target_velocity.fill(0.0);
-        has_prev_solve_ = true;
-      } else {
-        const double dt = (now_time - prev_solve_time_).seconds();
-        if (dt > 1e-4 && dt < 1.0) {
-          std::array<double, 6> raw_ff{};
-          raw_ff.fill(0.0);
-          for (const std::size_t j : active_joints_) {
-            raw_ff[j] = (target[j] - prev_solved_target_[j]) / dt;
-            raw_ff[j] = std::clamp(raw_ff[j], -max_velocity_, max_velocity_);
-            ff_velocity_[j] = 0.7 * ff_velocity_[j] + 0.3 * raw_ff[j];
-          }
-          servo_input_.target_velocity = ff_velocity_;
-        } else {
-          ff_velocity_.fill(0.0);
-          servo_input_.target_velocity.fill(0.0);
-        }
-      }
-      prev_solved_target_ = target;
-      prev_solve_time_ = now_time;
-      servo_input_.target_acceleration.fill(0.0);
-      stopping_target_set_ = false;
-    } else {
-      has_prev_solve_ = false;
-      ff_velocity_.fill(0.0);
+      servo_input_.control_interface = ruckig::ControlInterface::Position;
       servo_input_.target_velocity.fill(0.0);
-      if (!stopping_target_set_) {
-        set_stopping_target();
-        target = servo_input_.target_position;
-      } else {
-        target = servo_input_.target_position;
-      }
+      servo_input_.target_acceleration.fill(0.0);
+    } else {
+      // Stale target, external veto, a formal Stopping transition, or
+      // tracking not armed: decelerate smoothly to zero velocity and hold
+      // wherever that ends up, ready to resume the instant should_track
+      // becomes true again.
+      begin_velocity_stop();
     }
+    const auto target = servo_input_.target_position;
+
     const double solution_error = have_direction ?
       angle(microphone_normal(target), desired) : 0.0;
     const auto result = otg_->update(servo_input_, servo_output_);
@@ -957,15 +971,17 @@ private:
     servo_command_[5] = fixed_[5];
     publish_servo_command(servo_command_);
     servo_output_.pass_to_input(servo_input_);
+    write_servo_log(control_state, target_available, target, actual,
+      pointing_error, solution_error, result);
 
     if (control_state == ControlState::Stopping && result == ruckig::Result::Finished) {
       finish_tracking_controller_switch();
       return;
     }
-    const char * state = target_available ?
-      (motion_latched_ ? "tracking" : "reached/deadband") :
-      (external_veto ? "hold/veto" :
-       (!have_direction ? "hold/no-target" : "hold/stale"));
+    const char * state = should_track ? "tracking" :
+      (control_state == ControlState::Stopping ? "stopping" :
+       (external_veto ? "hold/veto" :
+        (!have_direction ? "hold/no-target" : "hold/stale")));
     RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 1000,
       "servo q1=%.3f q4=%.3f state=%s age=%.2fs "
       "error=%.1fdeg solution_error=%.1fdeg target_q1=%.3f target_q4=%.3f "
@@ -1010,19 +1026,14 @@ private:
   bool have_previous_yolo_direction_{false};
   ControlState control_state_{ControlState::Trajectory};
   bool home_requested_{false}, home_reached_{false};
-  bool motion_latched_{false}, stopping_target_set_{false};
-  std::array<double, 6> prev_solved_target_{};
-  rclcpp::Time prev_solve_time_{0, 0, RCL_ROS_TIME};
-  std::array<double, 6> ff_velocity_{};
-  bool has_prev_solve_{false};
   bool ekf_enabled_{true};
   Verdict ast_verdict_{false, 0.0, rclcpp::Time(0, 0, RCL_ROS_TIME)};
   Verdict gre_verdict_{false, 0.0, rclcpp::Time(0, 0, RCL_ROS_TIME)};
   Verdict mobilenetv2_verdict_{false, 0.0, rclcpp::Time(0, 0, RCL_ROS_TIME)};
   bool have_ast_verdict_{false}, have_gre_verdict_{false}, have_mobilenetv2_verdict_{false};
-  double target_timeout_, smoothing_alpha_, angular_deadband_, angular_deadband_exit_;
+  double target_timeout_, smoothing_alpha_, angular_deadband_;
   double motion_penalty_;
-  double command_horizon_, command_rate_hz_, max_velocity_, max_acceleration_;
+  double command_rate_hz_, max_velocity_, max_acceleration_;
   double max_jerk_, max_tracking_error_;
   double direct_min_activity_, direct_class_timeout_;
   bool require_home_;
@@ -1031,15 +1042,17 @@ private:
   std::string direct_classifier_source_;
   std::string ekf_direction_log_path_;
   std::string yolo_direction_log_path_;
+  std::string servo_log_path_;
   std::ofstream ekf_direction_log_;
   std::ofstream yolo_direction_log_;
+  std::ofstream servo_log_;
   const std::array<double, 6> home_{
     M_PI / 2.0, -M_PI / 2.0, -M_PI / 2.0, 0.0, M_PI / 2.0, 0.0};
 };
 
 int main(int argc, char ** argv) {
   rclcpp::init(argc, argv);
-  auto node = std::make_shared<ArmAudioTracker>();
+  auto node = std::make_shared<ArmTracker>();
   rclcpp::executors::MultiThreadedExecutor executor(
     rclcpp::ExecutorOptions(), 2);
   executor.add_node(node);

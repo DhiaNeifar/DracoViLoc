@@ -1,7 +1,7 @@
 # DracoViLoc ODAS and UMA16v2
 
 > For the full acoustic pipeline — AST/GRE classification and EKF fusion into
-> `/fused_target_pose`, which is what `arm_audio_tracker` actually consumes —
+> `/fused_target_pose`, which is what `arm_tracker` actually consumes —
 > see [`docs/AUDIO_FUSION_INTEGRATION.md`](../../docs/AUDIO_FUSION_INTEGRATION.md).
 > This document covers only ODAS capture and localization on their own.
 
@@ -28,7 +28,7 @@ This launches the simulated FAIRINO arm, fixed table microphone, ODAS, RViz and
 the continuous joint-1/joint-4 audio servo:
 
 ```bash
-ros2 launch dracoviloc_bringup arm_audio_demo.launch.py \
+ros2 launch dracoviloc_bringup arm_demo.launch.py \
   audio_enabled:=true \
   audio_tracking_enabled:=true
 ```
@@ -41,7 +41,7 @@ Angles are radians.
 To inspect audio localization without moving the simulated arm:
 
 ```bash
-ros2 launch dracoviloc_bringup arm_audio_demo.launch.py \
+ros2 launch dracoviloc_bringup arm_demo.launch.py \
   audio_enabled:=true audio_tracking_enabled:=false
 ```
 

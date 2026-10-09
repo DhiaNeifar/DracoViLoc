@@ -267,7 +267,7 @@ sudo apt install -y v4l-utils
 ### Isaac package not found on the host
 
 Expected: Isaac packages are container-only. Start YOLO inside the container;
-do not launch it from `arm_audio_demo.launch.py`.
+do not launch it from `arm_demo.launch.py`.
 
 ### `NvMapMemAlloc... error 12`
 

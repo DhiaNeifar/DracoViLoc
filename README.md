@@ -306,7 +306,7 @@ source /opt/ros/humble/setup.bash
 source ~/odas_ws/install/setup.bash
 source install/setup.bash
 
-ros2 launch dracoviloc_bringup arm_audio_demo.launch.py \
+ros2 launch dracoviloc_bringup arm_demo.launch.py \
   audio_enabled:=true \
   ast_enabled:=true \
   gre_enabled:=true \
@@ -429,5 +429,5 @@ actually carries and moves the camera.
 
 
 
-ros2 launch dracoviloc_bringup arm_audio_demo.launch.py audio_enabled:=true ast_enabled:=false gre_enabled:=false mobilenetv2_enabled:=true mobilenetv2_ekf_enabled:=true yolo_enabled:=true fusion_enabled:=true tracking_mode:=ekf use_rviz:=true mobilenetv2_engine_path:=$HOME/DracoViLoc/models/mobilenetv2/drone_fp32_t2000.engine hardware_mode:=mock robot_ip:=192.168.58.2 max_tracking_error:=1.57 sss_channels_recording:=true sss_channels_root:=$HOME/DracoViLoc/recordings recording_enabled:=true recording_root:=$HOME/DracoViLoc/runs recording_fps:=15.0 recording_video_topic:=/image
+ros2 launch dracoviloc_bringup arm_demo.launch.py audio_enabled:=true ast_enabled:=false gre_enabled:=false mobilenetv2_enabled:=true mobilenetv2_ekf_enabled:=true yolo_enabled:=true fusion_enabled:=true tracking_mode:=ekf use_rviz:=true mobilenetv2_engine_path:=$HOME/DracoViLoc/models/mobilenetv2/drone_fp32_t2000.engine hardware_mode:=mock robot_ip:=192.168.58.2 max_tracking_error:=1.57 sss_channels_recording:=true sss_channels_root:=$HOME/DracoViLoc/recordings recording_enabled:=true recording_root:=$HOME/DracoViLoc/runs recording_fps:=15.0 recording_video_topic:=/image
 

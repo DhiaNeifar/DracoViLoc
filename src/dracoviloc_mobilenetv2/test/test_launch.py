@@ -9,7 +9,7 @@ from launch.utilities import perform_substitutions
 
 REPO = Path(__file__).resolve().parents[3]
 spec = importlib.util.spec_from_file_location(
-    'arm_audio_demo', REPO / 'src/dracoviloc_bringup/launch/arm_audio_demo.launch.py')
+    'arm_demo', REPO / 'src/dracoviloc_bringup/launch/arm_demo.launch.py')
 bringup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bringup)
 

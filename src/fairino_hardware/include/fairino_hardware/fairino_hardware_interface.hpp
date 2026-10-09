@@ -79,6 +79,8 @@ public:
   double _command_change_threshold{1e-6};
   std::chrono::steady_clock::time_point _last_servoj_left{};
   std::chrono::steady_clock::time_point _last_servoj_right{};
+  uint64_t _skipped_servoj_cycles{0};
+  rclcpp::Clock _skip_log_clock{RCL_STEADY_TIME};
   int _control_mode;
   
   // Dual robot support

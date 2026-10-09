@@ -1,0 +1,8 @@
+[Unit]
+Description=Sync finished DracoViLoc recordings to Google Drive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/DracoViLoc/scripts/sync_runs_to_drive.sh

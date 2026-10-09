@@ -6,7 +6,10 @@ namespace {
 constexpr const char * RECOVERY_SERVICE_NAME = "/fairino_hardware/recover";
 constexpr int RECOVERY_RESET_ATTEMPTS = 3;
 constexpr auto RECOVERY_SETTLE_TIME = std::chrono::seconds(1);
-constexpr auto SERVO_COMMAND_INTERVAL = std::chrono::milliseconds(10);
+// ros2_control runs at 100 Hz (10 ms). A wall-clock-driven write() that fires
+// a hair early (e.g. 9.9 ms after the last send) must still count as due, or
+// that cycle is skipped and the next one effectively sends two steps at once.
+constexpr auto SERVO_COMMAND_INTERVAL = std::chrono::milliseconds(9);
 constexpr float SERVO_COMMAND_PERIOD_S = 0.010F;
 
 class RecoveryPauseGuard
@@ -387,9 +390,14 @@ hardware_interface::return_type FairinoHardwareInterface::write(const rclcpp::Ti
         const bool right_due = !_right_robot ||
             send_time - _last_servoj_right >= SERVO_COMMAND_INTERVAL;
         if (!left_due || !right_due) {
+            ++_skipped_servoj_cycles;
+            RCLCPP_WARN_THROTTLE(rclcpp::get_logger("FairinoHardwareInterface"),
+                _skip_log_clock, 5000,
+                "ServoJ cycle not due yet; %lu skipped so far",
+                static_cast<unsigned long>(_skipped_servoj_cycles));
             return hardware_interface::return_type::OK;
         }
-        
+
         // Prepare commands for left robot (or single robot)
         JointPos left_cmd;
         ExaxisPos left_extcmd{0,0,0,0};

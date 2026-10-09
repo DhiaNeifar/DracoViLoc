@@ -48,29 +48,44 @@ public:
       throw std::runtime_error("video_fps must be positive");
     }
 
-    directory_ = fs::absolute(fs::path(root)) / timestamp();
-    fs::create_directories(directory_);
-    video_path_ = directory_ / "camera.mp4";
-    audio_path_ = directory_ / "audio_sss.wav";
-    sst_path_ = directory_ / "audio_sst.jsonl";
+    const auto base = fs::absolute(fs::path(root));
+    const auto stamp = timestamp();
+    if (require_video_) {
+      video_directory_ = base / "video" / stamp;
+      fs::create_directories(video_directory_);
+      video_path_ = video_directory_ / "camera.mp4";
+      video_sub_ = create_subscription<sensor_msgs::msg::Image>(
+        video_topic_, rclcpp::SensorDataQoS(),
+        [this](sensor_msgs::msg::Image::ConstSharedPtr message) {record_video(*message);});
+    }
 
-    video_sub_ = create_subscription<sensor_msgs::msg::Image>(
-      video_topic_, rclcpp::SensorDataQoS(),
-      [this](sensor_msgs::msg::Image::ConstSharedPtr message) {record_video(*message);});
+    if (require_audio_) {
+      audio_directory_ = base / "audio" / stamp;
+      fs::create_directories(audio_directory_);
+      audio_path_ = audio_directory_ / "audio_sss.wav";
+      const auto audio_qos = rclcpp::QoS(rclcpp::KeepLast(50)).reliable();
+      audio_sub_ = create_subscription<audio_utils_msgs::msg::AudioFrame>(
+        audio_topic_, audio_qos,
+        [this](audio_utils_msgs::msg::AudioFrame::ConstSharedPtr message) {record_audio(*message);});
+    }
 
-    const auto audio_qos = rclcpp::QoS(rclcpp::KeepLast(50)).reliable();
-    audio_sub_ = create_subscription<audio_utils_msgs::msg::AudioFrame>(
-      audio_topic_, audio_qos,
-      [this](audio_utils_msgs::msg::AudioFrame::ConstSharedPtr message) {record_audio(*message);});
-
-    sst_sub_ = create_subscription<odas_ros_msgs::msg::OdasSstArrayStamped>(
-      sst_topic_, rclcpp::QoS(rclcpp::KeepLast(50)).reliable(),
-      [this](odas_ros_msgs::msg::OdasSstArrayStamped::ConstSharedPtr message) {
-        record_sst(*message);
-      });
+    if (require_sst_) {
+      if (audio_directory_.empty()) {
+        audio_directory_ = base / "audio" / stamp;
+        fs::create_directories(audio_directory_);
+      }
+      sst_path_ = audio_directory_ / "audio_sst.jsonl";
+      sst_sub_ = create_subscription<odas_ros_msgs::msg::OdasSstArrayStamped>(
+        sst_topic_, rclcpp::QoS(rclcpp::KeepLast(50)).reliable(),
+        [this](odas_ros_msgs::msg::OdasSstArrayStamped::ConstSharedPtr message) {
+          record_sst(*message);
+        });
+    }
 
     write_metadata("waiting_for_topics");
-    RCLCPP_INFO(get_logger(), "Recording session created at %s", directory_.c_str());
+    RCLCPP_INFO(get_logger(), "Recording session created (video=%s, audio=%s)",
+      video_directory_.empty() ? "none" : video_directory_.c_str(),
+      audio_directory_.empty() ? "none" : audio_directory_.c_str());
     RCLCPP_INFO(get_logger(), "Waiting for%s%s%s before synchronized recording starts",
       require_video_ ? " video" : "", require_audio_ ? " /sss" : "",
       require_sst_ ? " /sst" : "");
@@ -82,7 +97,9 @@ public:
     close_audio();
     close_sst();
     write_metadata("complete");
-    RCLCPP_INFO(get_logger(), "Recording saved in %s", directory_.c_str());
+    RCLCPP_INFO(get_logger(), "Recording saved (video=%s, audio=%s)",
+      video_directory_.empty() ? "none" : video_directory_.c_str(),
+      audio_directory_.empty() ? "none" : audio_directory_.c_str());
   }
 
 private:
@@ -93,7 +110,7 @@ private:
     std::tm local{};
     localtime_r(&raw, &local);
     std::ostringstream output;
-    output << std::put_time(&local, "%d_%m_%Y_%H_%M_%S");
+    output << std::put_time(&local, "%Y_%m_%d_%H_%M_%S");
     return output.str();
   }
 
@@ -405,28 +422,39 @@ private:
 
   void write_metadata(const std::string & state) const
   {
-    std::ofstream output(directory_ / "metadata.json", std::ios::trunc);
-    output << "{\n"
-           << "  \"state\": \"" << state << "\",\n"
-           << "  \"updated_at\": \"" << iso_timestamp() << "\",\n"
-           << "  \"started_at\": \"" << started_at_ << "\",\n"
-           << "  \"video_topic\": \"" << video_topic_ << "\",\n"
-           << "  \"audio_topic\": \"" << audio_topic_ << "\",\n"
-           << "  \"sst_topic\": \"" << sst_topic_ << "\",\n"
-           << "  \"video_file\": \"camera.mp4\",\n"
-           << "  \"audio_file\": \"audio_sss.wav\",\n"
-           << "  \"sst_file\": \"audio_sst.jsonl\",\n"
-           << "  \"video_fps\": " << video_fps_ << ",\n"
-           << "  \"video_frames\": " << video_frames_.load() << ",\n"
-           << "  \"audio_messages\": " << audio_frames_.load() << ",\n"
-           << "  \"sst_messages\": " << sst_messages_.load() << ",\n"
-           << "  \"video_ok\": " << (video_failed_ ? "false" : "true") << ",\n"
-           << "  \"audio_ok\": " << (audio_failed_ ? "false" : "true") << ",\n"
-           << "  \"sst_ok\": " << (sst_failed_ ? "false" : "true") << "\n"
-           << "}\n";
+    if (!video_directory_.empty()) {
+      std::ofstream output(video_directory_ / "metadata.json", std::ios::trunc);
+      output << "{\n"
+             << "  \"state\": \"" << state << "\",\n"
+             << "  \"updated_at\": \"" << iso_timestamp() << "\",\n"
+             << "  \"started_at\": \"" << started_at_ << "\",\n"
+             << "  \"video_topic\": \"" << video_topic_ << "\",\n"
+             << "  \"video_file\": \"camera.mp4\",\n"
+             << "  \"video_fps\": " << video_fps_ << ",\n"
+             << "  \"video_frames\": " << video_frames_.load() << ",\n"
+             << "  \"video_ok\": " << (video_failed_ ? "false" : "true") << "\n"
+             << "}\n";
+    }
+    if (!audio_directory_.empty()) {
+      std::ofstream output(audio_directory_ / "metadata.json", std::ios::trunc);
+      output << "{\n"
+             << "  \"state\": \"" << state << "\",\n"
+             << "  \"updated_at\": \"" << iso_timestamp() << "\",\n"
+             << "  \"started_at\": \"" << started_at_ << "\",\n"
+             << "  \"audio_topic\": \"" << audio_topic_ << "\",\n"
+             << "  \"sst_topic\": \"" << sst_topic_ << "\",\n"
+             << "  \"audio_file\": \"" << (require_audio_ ? "audio_sss.wav" : "") << "\",\n"
+             << "  \"sst_file\": \"" << (require_sst_ ? "audio_sst.jsonl" : "") << "\",\n"
+             << "  \"audio_messages\": " << audio_frames_.load() << ",\n"
+             << "  \"sst_messages\": " << sst_messages_.load() << ",\n"
+             << "  \"audio_ok\": " << (audio_failed_ ? "false" : "true") << ",\n"
+             << "  \"sst_ok\": " << (sst_failed_ ? "false" : "true") << "\n"
+             << "}\n";
+    }
   }
 
-  fs::path directory_;
+  fs::path video_directory_;
+  fs::path audio_directory_;
   fs::path video_path_;
   fs::path audio_path_;
   std::string video_topic_;

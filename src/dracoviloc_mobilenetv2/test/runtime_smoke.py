@@ -167,7 +167,7 @@ def main():
 
         # Direct tracker receives only the new direction topic.
         before = positions()
-        tracker = start('direct_tracker', 'ros2', 'run', 'dracoviloc_tracking', 'arm_audio_tracker',
+        tracker = start('direct_tracker', 'ros2', 'run', 'dracoviloc_tracking', 'arm_tracker',
                         '--ros-args', '-p', 'ekf_enabled:=false',
                         '-p', 'direct_classifier_source:=mobilenetv2',
                         '-p', 'require_home_before_tracking:=false')
@@ -188,7 +188,7 @@ def main():
         before = positions()
         ekf = start('ekf_enabled', 'ros2', 'launch', 'dracoviloc_ekf', 'ekf.launch.py',
                     'mobilenetv2_ekf_enabled:=true')
-        tracker = start('ekf_tracker', 'ros2', 'run', 'dracoviloc_tracking', 'arm_audio_tracker',
+        tracker = start('ekf_tracker', 'ros2', 'run', 'dracoviloc_tracking', 'arm_tracker',
                         '--ros-args', '-p', 'require_home_before_tracking:=false')
         enable_tracking()
         run(7)

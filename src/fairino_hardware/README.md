@@ -21,8 +21,9 @@ For the current audio-pointing demonstration, MoveIt is deliberately disabled
 because the controller directly servos only joints 1 and 4:
 
 ```bash
-ros2 launch dracoviloc_bringup arm_audio_demo.launch.py \
-  audio_enabled:=true audio_tracking_enabled:=true
+ros2 launch dracoviloc_bringup arm_demo.launch.py \
+  audio_enabled:=true ast_enabled:=true gre_enabled:=true \
+  fusion_enabled:=true tracking_mode:=ekf
 ```
 
 ## Physical arm

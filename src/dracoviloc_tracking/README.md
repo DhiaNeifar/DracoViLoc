@@ -1,6 +1,6 @@
 # dracoviloc_tracking
 
-Arm-pointing controllers for DracoViLoc. `arm_audio_tracker` consumes the
+Arm-pointing controller for DracoViLoc. `arm_tracker` consumes the
 EKF direction and publishes a continuous, jerk-limited position stream. Only
 joint1 (yaw) and joint4 (elevation) move; joints 2, 3, 5 and 6 are captured and
 locked when tracking starts. This joint choice follows the current robot
@@ -39,12 +39,19 @@ back to `arm_controller`, so MoveIt and RViz can be used normally.
 
 `max_velocity`, `max_acceleration` and `max_jerk` are the online servo limits.
 `command_rate_hz` defaults to 100 Hz and should match the controller manager
-update rate. `command_horizon` remains accepted for compatibility with older
-launch commands but is no longer used for tracking. Tracking starts above
-`angular_deadband` (0.08 rad by default) and releases below
-`angular_deadband_exit` (0.04 rad). If measured hardware position falls more
+update rate. Ruckig tracks the solved aim point continuously; the commanded
+target only moves when it changes by more than `angular_deadband` (0.003 rad
+by default), which just suppresses noise-driven micro-retargeting rather than
+gating a start/stop decision. If measured hardware position falls more
 than `max_tracking_error` (0.35 rad) behind the generated servo state,
-tracking stops safely rather than re-anchoring the stream and causing a jump.
+tracking stops safely by decelerating Ruckig to zero velocity (jerk-limited,
+so it never overshoots and swings back) rather than re-anchoring the stream
+and causing a jump.
+
+To diagnose overshoot and settling behavior on the real arm, set
+`servo_log_path` to a writable CSV path -- every servo tick is appended with
+the tracking state, Ruckig's control interface, the commanded and actual
+joint1/joint4 positions, output velocity, and pointing error.
 
 To diagnose target jitter, set `ekf_direction_log_path` to a writable CSV
 path. In EKF mode, every `/ekf/direction` message is appended with its raw
@@ -54,7 +61,7 @@ positions. `input_jump_deg` measures the EKF message itself;
 `world_jump_deg` also includes changes introduced by TF:
 
 ```bash
-ros2 launch dracoviloc_bringup arm_audio_demo.launch.py \
+ros2 launch dracoviloc_bringup arm_demo.launch.py \
   tracking_mode:=ekf fusion_enabled:=true yolo_enabled:=true \
   ekf_direction_log_path:=$HOME/DracoViLoc/runs/ekf_direction.csv
 ```
@@ -70,7 +77,7 @@ the average.
 Recommended launch:
 
 ```bash
-ros2 launch dracoviloc_bringup arm_audio_demo.launch.py \
+ros2 launch dracoviloc_bringup arm_demo.launch.py \
   hardware_mode:=mock audio_enabled:=true ast_enabled:=true \
   fusion_enabled:=true tracking_mode:=ekf use_rviz:=true
 ```

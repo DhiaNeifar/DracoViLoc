@@ -112,7 +112,7 @@ def main():
             if camera.poll() is not None:
                 raise RuntimeError('camera startup failed')
         assert counts['image'], 'camera images are not reaching the host'
-        host = start('host', ['ros2', 'launch', 'dracoviloc_bringup', 'arm_audio_demo.launch.py',
+        host = start('host', ['ros2', 'launch', 'dracoviloc_bringup', 'arm_demo.launch.py',
             'hardware_mode:=mock', 'audio_enabled:=true', 'ast_enabled:=' + args.ast,
             'gre_enabled:=' + args.gre, 'mobilenetv2_enabled:=true',
             'mobilenetv2_ekf_enabled:=true', 'yolo_enabled:=true', 'fusion_enabled:=true',

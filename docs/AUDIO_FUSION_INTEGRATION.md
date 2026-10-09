@@ -1,7 +1,7 @@
 # Audio fusion integration (ODAS + AST + EKF)
 
 This pipeline classifies ODAS acoustic tracks with AST and fuses them with a
-bearing-only EKF into `/fused_target_pose`, which `arm_audio_tracker`
+bearing-only EKF into `/fused_target_pose`, which `arm_tracker`
 (`dracoviloc_tracking`) consumes directly. It replaces the old
 `audio_target_tracker.py` path (raw `/sst` peaks, no classification, no
 outlier rejection).
@@ -31,7 +31,7 @@ UMA-16 ──► ODAS (dracoviloc_odas, full-band, soundcard capture)
                                                         /fused_target_pose
                                                                   │
                                                                   ▼
-                                          arm_audio_tracker (dracoviloc_tracking)
+                                          arm_tracker (dracoviloc_tracking)
                                                                   │
                                                                   ▼
                                             /arm_controller/joint_trajectory
@@ -39,7 +39,7 @@ UMA-16 ──► ODAS (dracoviloc_odas, full-band, soundcard capture)
 
 All three nodes above the tracker (`odas_ekf_adapter`, `ast_classifier_node`,
 `ekf_fusion_node`) live in `dracoviloc_audio_fusion` and are started together
-by `dracoviloc_bringup/arm_audio_demo.launch.py` when `fusion_enabled:=true`
+by `dracoviloc_bringup/arm_demo.launch.py` when `fusion_enabled:=true`
 (the default).
 
 ---
@@ -91,7 +91,7 @@ plain files on disk, not colcon packages.
 source /opt/ros/humble/setup.bash
 source ~/DracoViLoc/install/setup.bash
 
-ros2 launch dracoviloc_bringup arm_audio_demo.launch.py \
+ros2 launch dracoviloc_bringup arm_demo.launch.py \
   audio_enabled:=true audio_tracking_enabled:=true fusion_enabled:=true \
   table_mic_roll:=0.0 use_rviz:=true \
   smoothing_alpha:=0.60 max_velocity:=1.5 max_acceleration:=2.5 \
@@ -101,7 +101,7 @@ ros2 launch dracoviloc_bringup arm_audio_demo.launch.py \
 One terminal, one sourced workspace. This starts, in order: the simulated
 arm, ODAS (soundcard capture, full-band), the `world -> table_mic_link`
 static transform, `odas_ekf_adapter`, `ast_classifier_node` (under
-`trt_env`), `ekf_fusion_node`, and `arm_audio_tracker`.
+`trt_env`), `ekf_fusion_node`, and `arm_tracker`.
 
 `fusion_enabled:=false` skips all three fusion nodes if you only want raw
 ODAS localization running (e.g. for `ssl_top_monitor.py`-style calibration,
@@ -127,20 +127,20 @@ launch file does not start GRE at all yet (see Known gaps).
 TF — it reads the ODAS unit vector's `(x, y, z)` directly as
 azimuth/elevation in whatever frame ODAS physically measured it in, then
 stamps `/fused_target_pose` with `header.frame_id = tracking_frame`.
-`arm_audio_tracker.cpp` trusts that stamp and looks up `world -> <that
+`arm_tracker.cpp` trusts that stamp and looks up `world -> <that
 frame>` via TF.
 
 DracoViLoc's ODAS launch is given `frame_id:=table_mic_link`
 (`dracoviloc_odas/audio_bringup.launch.py`), and a static transform
 `world -> table_mic_link` is published by the `table_microphone_tf` node in
-`arm_audio_demo.launch.py`. `arm_audio_demo.launch.py` already forwards
+`arm_demo.launch.py`. `arm_demo.launch.py` already forwards
 `tracking_frame:=table_mic_link` into `ast_ekf_fusion.launch.py`
 automatically — this only matters if you launch
 `dracoviloc_audio_fusion/launch/ast_ekf_fusion.launch.py` standalone against
 a differently-configured ODAS instance, in which case override it to match.
 
 Leaving it at the EKF's own default (`"odas"`) would make
-`arm_audio_tracker.cpp` look up a TF frame that doesn't exist, log a
+`arm_tracker.cpp` look up a TF frame that doesn't exist, log a
 throttled warning, and never move the arm — with every upstream node
 reporting healthy.
 
@@ -155,7 +155,7 @@ reporting healthy.
 | `/audio_classifier/detection` | `geometry_msgs/Vector3Stamped` (`x`=track id, `y`=is_drone, `z`=confidence) | — | `ast_classifier_node` |
 | `/camera/yolo_detection` | `geometry_msgs/PointStamped` (`x`,`y` = angular error, radians; `z`=1.0; `frame_id`=`"drone"`/`"none"`) | camera optical frame, converted before publish | **pending** — see Known gaps |
 | `/fused_target_pose` | `geometry_msgs/PointStamped` (`x`=azimuth, `y`=elevation, radians; `z`=1.0, direction only) | `table_mic_link` | `ekf_fusion_node` |
-| `/arm_controller/joint_trajectory` | `trajectory_msgs/JointTrajectory` | — | `arm_audio_tracker` |
+| `/arm_controller/joint_trajectory` | `trajectory_msgs/JointTrajectory` | — | `arm_tracker` |
 
 `/fused_target_pose` is bearing-only. `point.z` is always `1.0`; it marks a
 unit direction, never a range. This is sufficient for slew-to-cue — a target
@@ -180,7 +180,7 @@ the gate retargets; after `bearing_timeout` (2 s) of silence it re-arms.
 
 ## Calibrating the microphone yaw
 
-`table_mic_yaw` (`arm_audio_demo.launch.py`, currently `π`, chosen for the
+`table_mic_yaw` (`arm_demo.launch.py`, currently `π`, chosen for the
 mount geometry, not measured against a real bearing) is the single most
 likely source of "everything upstream is correct and the arm still points
 off by a constant angle." With ODAS running (`audio_enabled:=true`,
@@ -251,7 +251,7 @@ against this pipeline's real behavior, not the published model numbers.
 | Symptom | Cause |
 |---|---|
 | `/fused_target_pose` never appears, `ekf_fusion_node` logs "waiting for a classified drone bearing" | No `/sst` track above `min_confidence` — needs sustained, in-band sound and AST actually running |
-| `arm_audio_tracker` logs `no table_mic_link -> world transform` (or similar) forever | `tracking_frame` mismatch — see Frame requirement above |
+| `arm_tracker` logs `no table_mic_link -> world transform` (or similar) forever | `tracking_frame` mismatch — see Frame requirement above |
 | Arm points consistently off by a fixed angle | `table_mic_yaw` uncalibrated — see Calibrating the microphone yaw |
 | AST process exits immediately with an import error | `trt_env` missing or incomplete on this machine, or `ast_venv_python`/`ast_engine_path` launch args point somewhere that doesn't exist — check `ros2 launch ... --show-args` output for the resolved paths |
 | `FileNotFoundError` for the engine | `models/drone_ast.engine` was not copied onto this machine — it is intentionally not in git |
@@ -265,4 +265,4 @@ against this pipeline's real behavior, not the published model numbers.
 - [`../README.md`](../README.md) — DracoViLoc build and top-level launch commands
 - [`../src/dracoviloc_audio_fusion/README.md`](../src/dracoviloc_audio_fusion/README.md) — package internals, why AST runs via `ExecuteProcess`
 - [`../src/dracoviloc_odas/README.md`](../src/dracoviloc_odas/README.md) — ODAS/UMA-16 capture on its own
-- [`../src/dracoviloc_tracking/README.md`](../src/dracoviloc_tracking/README.md) — `arm_audio_tracker` servo behavior
+- [`../src/dracoviloc_tracking/README.md`](../src/dracoviloc_tracking/README.md) — `arm_tracker` servo behavior

@@ -189,15 +189,13 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share,
     if mode != "off":
         actions.append(Node(
             package="dracoviloc_tracking",
-            executable="arm_audio_tracker",
+            executable="arm_tracker",
             parameters=[{
                 "use_sim_time": False,
                 "smoothing_alpha": ParameterValue(
                     LaunchConfiguration("smoothing_alpha"), value_type=float),
                 "angular_deadband": ParameterValue(
                     LaunchConfiguration("angular_deadband"), value_type=float),
-                "angular_deadband_exit": ParameterValue(
-                    LaunchConfiguration("angular_deadband_exit"), value_type=float),
                 "max_velocity": ParameterValue(
                     LaunchConfiguration("max_velocity"), value_type=float),
                 "max_acceleration": ParameterValue(
@@ -208,12 +206,11 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share,
                     LaunchConfiguration("max_tracking_error"), value_type=float),
                 "command_rate_hz": ParameterValue(
                     LaunchConfiguration("command_rate_hz"), value_type=float),
-                "command_horizon": ParameterValue(
-                    LaunchConfiguration("command_horizon"), value_type=float),
                 "ekf_direction_log_path": LaunchConfiguration(
                     "ekf_direction_log_path"),
                 "yolo_direction_log_path": LaunchConfiguration(
                     "yolo_direction_log_path"),
+                "servo_log_path": LaunchConfiguration("servo_log_path"),
                 "ekf_enabled": mode == "ekf",
                 "direct_classifier_source": source,
                 "direct_min_activity": ParameterValue(
@@ -349,11 +346,11 @@ def generate_launch_description():
                         "of SSL/SST tuning."),
         DeclareLaunchArgument("smoothing_alpha", default_value="0.50"),
         DeclareLaunchArgument(
-            "angular_deadband", default_value="0.02",
-            description="Pointing error that starts arm tracking, in radians."),
-        DeclareLaunchArgument(
-            "angular_deadband_exit", default_value="0.01",
-            description="Smaller pointing error that stops tracking, in radians."),
+            "angular_deadband", default_value="0.003",
+            description="Minimum change in the solved aim point, in radians, "
+                        "before the commanded target is updated. Ruckig tracks "
+                        "continuously, so this only suppresses noise-driven "
+                        "micro-retargeting, not a start/stop threshold."),
         DeclareLaunchArgument("max_velocity", default_value="2.50"),
         DeclareLaunchArgument("max_acceleration", default_value="12.0"),
         DeclareLaunchArgument(
@@ -366,14 +363,15 @@ def generate_launch_description():
             "command_rate_hz", default_value="100.0",
             description="Jerk-limited position command rate; match controller_manager update_rate."),
         DeclareLaunchArgument(
-            "command_horizon", default_value="0.20",
-            description="Deprecated compatibility argument; tracking now uses online Ruckig commands."),
-        DeclareLaunchArgument(
             "ekf_direction_log_path", default_value="",
             description="Optional CSV file receiving every raw and filtered EKF direction."),
         DeclareLaunchArgument(
             "yolo_direction_log_path", default_value="",
             description="Optional CSV file receiving every raw YOLO direction."),
+        DeclareLaunchArgument(
+            "servo_log_path", default_value="",
+            description="Optional CSV file receiving every tracker servo tick, "
+                        "for diagnosing overshoot/settling behavior."),
         DeclareLaunchArgument(
             "ekf_process_noise", default_value="0.05",
             description="EKF process-noise covariance."),

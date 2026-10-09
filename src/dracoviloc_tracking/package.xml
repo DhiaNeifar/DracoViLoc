@@ -2,13 +2,12 @@
 <package format="3">
   <name>dracoviloc_tracking</name>
   <version>0.1.0</version>
-  <description>Ground-truth drone look-at tracking for the FAIRINO camera.</description>
+  <description>Jerk-limited arm pointing servo driven by the EKF-fused drone direction.</description>
   <maintainer email="maintainer@example.com">DracoViLoc</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>controller_manager_msgs</depend>
   <depend>geometry_msgs</depend>
-  <depend>moveit_ros_planning_interface</depend>
   <depend>odas_ros_msgs</depend>
   <depend>rclcpp</depend>
   <depend>ruckig</depend>
@@ -17,9 +16,6 @@
   <depend>std_srvs</depend>
   <depend>trajectory_msgs</depend>
   <depend>tf2</depend>
-  <depend>tf2_eigen</depend>
   <depend>tf2_ros</depend>
-  <depend>visualization_msgs</depend>
   <export><build_type>ament_cmake</build_type></export>
-  <depend>tf2_geometry_msgs</depend>
 </package>
