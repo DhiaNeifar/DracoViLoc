@@ -23,6 +23,7 @@
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "tf2_ros/buffer.h"
@@ -137,6 +138,12 @@ public:
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
+    // Marks the one moment that is only visible inside this node: when the
+    // tracker actually decides to steer toward a new solved target, as
+    // opposed to merely receiving a direction update (dracoviloc_diagnostics
+    // observes /yolo/direction, /mobilenetv2/direction, and /ekf/direction
+    // directly for those "input received" events).
+    events_pub_ = create_publisher<std_msgs::msg::String>("/tracking/events", 20);
     command_pub_ = create_publisher<trajectory_msgs::msg::JointTrajectory>(
       "/arm_controller/joint_trajectory", 10);
     servo_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
@@ -356,6 +363,7 @@ private:
         << "time_sec,control_state,control_interface,target_available,"
         << "target_q1,target_q4,actual_q1,actual_q4,"
         << "command_q1,command_q4,output_velocity_q1,output_velocity_q4,"
+        << "output_acceleration_q1,output_acceleration_q4,output_jerk_q1,output_jerk_q4,"
         << "pointing_error_deg,solution_error_deg,ruckig_result\n";
     }
     servo_log_ << std::setprecision(17);
@@ -363,9 +371,27 @@ private:
     RCLCPP_INFO(get_logger(), "Logging every servo tick to %s", path.c_str());
   }
 
+  // Jerk is not a Ruckig output state (only an input constraint), so it is
+  // derived here by differencing the commanded acceleration between ticks at
+  // the fixed command_rate_hz_ period, rather than from Ruckig directly.
+  std::array<double, 6> compute_jerk(const std::array<double, 6> & acceleration)
+  {
+    std::array<double, 6> jerk {};
+    if (have_previous_output_acceleration_) {
+      const double dt = 1.0 / command_rate_hz_;
+      for (std::size_t i = 0; i < jerk.size(); ++i) {
+        jerk[i] = (acceleration[i] - previous_output_acceleration_[i]) / dt;
+      }
+    }
+    previous_output_acceleration_ = acceleration;
+    have_previous_output_acceleration_ = true;
+    return jerk;
+  }
+
   void write_servo_log(
     ControlState control_state, bool target_available,
     const std::array<double, 6> & target, const std::array<double, 6> & actual,
+    const std::array<double, 6> & acceleration, const std::array<double, 6> & jerk,
     double pointing_error, double solution_error, ruckig::Result result)
   {
     if (!servo_log_.is_open()) {
@@ -384,6 +410,8 @@ private:
       << actual[0] << ',' << actual[3] << ','
       << servo_command_[0] << ',' << servo_command_[3] << ','
       << servo_output_.new_velocity[0] << ',' << servo_output_.new_velocity[3] << ','
+      << acceleration[0] << ',' << acceleration[3] << ','
+      << jerk[0] << ',' << jerk[3] << ','
       << pointing_error * 180.0 / M_PI << ',' << solution_error * 180.0 / M_PI << ','
       << static_cast<int>(result) << '\n';
     servo_log_.flush();
@@ -942,6 +970,9 @@ private:
         microphone_normal(candidate), microphone_normal(servo_input_.target_position));
       if (update_error >= angular_deadband_) {
         servo_input_.target_position = candidate;
+        std_msgs::msg::String event;
+        event.data = "target_updated";
+        events_pub_->publish(event);
       }
       servo_input_.control_interface = ruckig::ControlInterface::Position;
       servo_input_.target_velocity.fill(0.0);
@@ -971,8 +1002,9 @@ private:
     servo_command_[5] = fixed_[5];
     publish_servo_command(servo_command_);
     servo_output_.pass_to_input(servo_input_);
+    const auto jerk = compute_jerk(servo_output_.new_acceleration);
     write_servo_log(control_state, target_available, target, actual,
-      pointing_error, solution_error, result);
+      servo_output_.new_acceleration, jerk, pointing_error, solution_error, result);
 
     if (control_state == ControlState::Stopping && result == ruckig::Result::Finished) {
       finish_tracking_controller_switch();
@@ -996,6 +1028,7 @@ private:
   const std::array<std::size_t, 2> active_joints_{0, 3};
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr command_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr servo_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr events_pub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr fused_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr yolo_sub_;
@@ -1014,6 +1047,8 @@ private:
   std::array<double, 6> current_ {}, fixed_ {}, servo_command_ {};
   ruckig::InputParameter<6> servo_input_;
   ruckig::OutputParameter<6> servo_output_;
+  std::array<double, 6> previous_output_acceleration_ {};
+  bool have_previous_output_acceleration_{false};
   std::unique_ptr<ruckig::Ruckig<6>> otg_;
   std::vector<WristSample> wrist_lookup_;
   Eigen::Vector3d filtered_direction_{Eigen::Vector3d::UnitX()};

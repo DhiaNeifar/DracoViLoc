@@ -1,9 +1,9 @@
 import os
+from datetime import datetime
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, OpaqueFunction
-from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -14,8 +14,12 @@ def _enabled(context, name):
     return LaunchConfiguration(name).perform(context).lower() in ("1", "true", "yes", "on")
 
 
-def _configure_pipeline(context, ast_share, gre_share, ekf_share,
-                        recording_share, mobilenetv2_share):
+def _configure_pipeline(context):
+    # Each optional stack's share directory is resolved only once its own
+    # enabled flag is true, so arm_demo.launch.py can run with any subset of
+    # dracoviloc_ast/gre/mobilenetv2/odas/recording/diagnostics installed --
+    # e.g. a host that only has YOLO + tracking built doesn't need the audio
+    # or recording packages present at all.
     mode = LaunchConfiguration("tracking_mode").perform(context)
     audio_enabled = _enabled(context, "audio_enabled")
     yolo_enabled = _enabled(context, "yolo_enabled")
@@ -65,6 +69,17 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share,
         source = "gre"
 
     actions = []
+    if audio_enabled:
+        actions.append(IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(
+                get_package_share_directory("dracoviloc_odas"),
+                "launch", "audio_bringup.launch.py")),
+            launch_arguments={
+                "use_sim_time": "false",
+                "microphone_frame": "table_mic_link",
+                "diagnostics_log_path": LaunchConfiguration("odas_diagnostics_log_path"),
+                "diagnostics_interval_s": LaunchConfiguration("odas_diagnostics_interval_s"),
+            }.items()))
     if recording_enabled:
         actions.append(Node(
             package="dracoviloc_recording",
@@ -87,7 +102,7 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share,
     if sss_channels_recording and audio_enabled:
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
-                recording_share, "launch", "sss_channels.launch.py")),
+                get_package_share_directory("dracoviloc_recording"), "launch", "sss_channels.launch.py")),
             launch_arguments={
                 "audio_topic": LaunchConfiguration("recording_audio_topic"),
                 "output_root": LaunchConfiguration("sss_channels_root"),
@@ -113,7 +128,7 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share,
     if ast_enabled and audio_enabled:
         actions.append(GroupAction(scoped=True, actions=[IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
-                ast_share, "launch", "ast.launch.py")),
+                get_package_share_directory("dracoviloc_ast"), "launch", "ast.launch.py")),
             launch_arguments={
                 "venv_python": PathJoinSubstitution(
                     [EnvironmentVariable("HOME"), "DracoViLoc", "trt_env", "bin", "python3"]),
@@ -127,7 +142,7 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share,
             }.items())]))
     if gre_enabled and audio_enabled:
         actions.append(GroupAction(scoped=True, actions=[IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(os.path.join(gre_share, "launch", "gre.launch.py")),
+            PythonLaunchDescriptionSource(os.path.join(get_package_share_directory("dracoviloc_gre"), "launch", "gre.launch.py")),
             launch_arguments={
                 "venv_python": PathJoinSubstitution(
                     [EnvironmentVariable("HOME"), "DracoViLoc", "gre_env", "bin", "python3"]),
@@ -151,11 +166,11 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share,
                 mobile_arguments[name] = value
         actions.append(GroupAction(scoped=True, actions=[IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
-                mobilenetv2_share, "launch", "mobilenetv2.launch.py")),
+                get_package_share_directory("dracoviloc_mobilenetv2"), "launch", "mobilenetv2.launch.py")),
             launch_arguments=mobile_arguments.items())]))
     if fusion_enabled:
         actions.append(IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(os.path.join(ekf_share, "launch", "ekf.launch.py")),
+            PythonLaunchDescriptionSource(os.path.join(get_package_share_directory("dracoviloc_ekf"), "launch", "ekf.launch.py")),
             launch_arguments={"yolo_enabled": "true" if yolo_enabled else "false",
                               "ast_enabled": "true" if ast_enabled and audio_enabled else "false",
                               "gre_enabled": "true" if gre_enabled and audio_enabled else "false",
@@ -221,6 +236,22 @@ def _configure_pipeline(context, ast_share, gre_share, ekf_share,
                     LaunchConfiguration("home_duration_s"), value_type=float),
             }],
             output="screen"))
+
+    if _enabled(context, "diagnostics_enabled"):
+        run_timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+        diagnostics_dir = os.path.join(
+            LaunchConfiguration("recording_root").perform(context),
+            "diagnostics", run_timestamp)
+        actions.append(IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(
+                get_package_share_directory("dracoviloc_diagnostics"), "launch", "diagnostics.launch.py")),
+            launch_arguments={
+                "ee_frame": LaunchConfiguration("diagnostics_ee_frame"),
+                "smoothing_alpha": LaunchConfiguration("diagnostics_smoothing_alpha"),
+                "events_log_path": os.path.join(diagnostics_dir, "events.csv"),
+                "ee_kinematics_log_path": os.path.join(diagnostics_dir, "ee_kinematics.csv"),
+                "live_plot": LaunchConfiguration("diagnostics_live_plot"),
+            }.items()))
     return actions
 
 
@@ -228,14 +259,7 @@ def generate_launch_description():
     use_rviz = LaunchConfiguration("use_rviz")
     hardware_mode = LaunchConfiguration("hardware_mode")
     robot_ip = LaunchConfiguration("robot_ip")
-    audio_enabled = LaunchConfiguration("audio_enabled")
     bringup_share = get_package_share_directory("dracoviloc_bringup")
-    audio_share = get_package_share_directory("dracoviloc_odas")
-    ast_share = get_package_share_directory("dracoviloc_ast")
-    gre_share = get_package_share_directory("dracoviloc_gre")
-    ekf_share = get_package_share_directory("dracoviloc_ekf")
-    recording_share = get_package_share_directory("dracoviloc_recording")
-    mobilenetv2_share = get_package_share_directory("dracoviloc_mobilenetv2")
 
     arm_demo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -246,17 +270,6 @@ def generate_launch_description():
             "use_rviz": use_rviz,
             "use_moveit": "true",
         }.items())
-
-    audio = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(audio_share, "launch", "audio_bringup.launch.py")),
-        launch_arguments={
-            "use_sim_time": "false",
-            "microphone_frame": "table_mic_link",
-            "diagnostics_log_path": LaunchConfiguration("odas_diagnostics_log_path"),
-            "diagnostics_interval_s": LaunchConfiguration("odas_diagnostics_interval_s"),
-        }.items(),
-        condition=IfCondition(audio_enabled))
 
     return LaunchDescription([
         DeclareLaunchArgument("use_rviz", default_value="true"),
@@ -306,12 +319,19 @@ def generate_launch_description():
                         "the EKF when fusion_enabled is true. Isaac ROS is "
                         "launched separately inside its container."),
         DeclareLaunchArgument(
-            "recording_enabled", default_value="false",
-            description="Continuously record ROS video and separated audio."),
+            "recording_enabled", default_value="true",
+            description="Continuously record ROS video and separated audio. "
+                        "On by default: every run should leave a reviewable "
+                        "recording. Requires audio_enabled or yolo_enabled; "
+                        "pass recording_enabled:=false to opt out."),
         DeclareLaunchArgument(
             "recording_root", default_value="/home/dhianeifar/DracoViLoc/runs"),
         DeclareLaunchArgument(
-            "recording_video_topic", default_value="/yolov8_processed_image"),
+            "recording_video_topic", default_value="/image",
+            description="Clean, undetected camera feed (no YOLO boxes drawn), "
+                        "so recordings are suitable for later annotation. Use "
+                        "/yolov8_processed_image instead to record the "
+                        "YOLO-annotated view."),
         DeclareLaunchArgument(
             "recording_audio_topic", default_value="/sss"),
         DeclareLaunchArgument(
@@ -408,11 +428,24 @@ def generate_launch_description():
         DeclareLaunchArgument("table_mic_yaw", default_value="3.1415926535897"),
         DeclareLaunchArgument("table_mic_pitch", default_value="0.0"),
         DeclareLaunchArgument("table_mic_roll", default_value="1.57079632679"),
+        DeclareLaunchArgument(
+            "diagnostics_enabled", default_value="true",
+            description="Log yolo/mobilenetv2/ekf timing events and "
+                        "end-effector position/speed/acceleration/jerk on "
+                        "every run, under recording_root/diagnostics/<run>/."),
+        DeclareLaunchArgument(
+            "diagnostics_ee_frame", default_value="wrist3_link",
+            description="TF frame treated as the end effector "
+                        "(wrist3_link, d435i_link, or odas_link)."),
+        DeclareLaunchArgument(
+            "diagnostics_smoothing_alpha", default_value="0.3",
+            description="Exponential smoothing on the end-effector "
+                        "velocity/acceleration/jerk derived from TF; "
+                        "1.0 disables it."),
+        DeclareLaunchArgument(
+            "diagnostics_live_plot", default_value="false",
+            description="Open the live end-effector speed/acceleration + "
+                        "event-timeline plot (requires a display)."),
         arm_demo,
-        audio,
-        OpaqueFunction(
-            function=_configure_pipeline,
-            kwargs={"ast_share": ast_share, "gre_share": gre_share,
-                    "ekf_share": ekf_share, "recording_share": recording_share,
-                    "mobilenetv2_share": mobilenetv2_share}),
+        OpaqueFunction(function=_configure_pipeline),
     ])

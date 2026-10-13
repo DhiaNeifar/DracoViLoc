@@ -34,8 +34,10 @@ public:
   {
     std::signal(SIGPIPE, SIG_IGN);
     const auto root = declare_parameter<std::string>("output_root", "runs");
+    // Default to the clean, undetected camera feed rather than the
+    // YOLO-annotated view, so recordings stay usable for later annotation.
     video_topic_ = declare_parameter<std::string>(
-      "video_topic", "/yolov8_processed_image");
+      "video_topic", "/image");
     audio_topic_ = declare_parameter<std::string>("audio_topic", "/sss");
     sst_topic_ = declare_parameter<std::string>("sst_topic", "/sst");
     video_fps_ = declare_parameter<double>("video_fps", 15.0);
