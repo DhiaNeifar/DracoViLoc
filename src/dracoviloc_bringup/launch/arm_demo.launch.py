@@ -234,6 +234,19 @@ def _configure_pipeline(context):
                     LaunchConfiguration("require_home_before_tracking"), value_type=bool),
                 "home_duration_s": ParameterValue(
                     LaunchConfiguration("home_duration_s"), value_type=float),
+                "dual_arm": ParameterValue(
+                    LaunchConfiguration("dual_arm"), value_type=bool),
+                "second_arm_x": ParameterValue(
+                    LaunchConfiguration("second_arm_x"), value_type=float),
+                "second_arm_y": ParameterValue(
+                    LaunchConfiguration("second_arm_y"), value_type=float),
+                "second_arm_z": ParameterValue(
+                    LaunchConfiguration("second_arm_z"), value_type=float),
+                "target_nominal_distance": ParameterValue(
+                    LaunchConfiguration("target_nominal_distance"), value_type=float),
+                "dual_tracking_policy": LaunchConfiguration("dual_tracking_policy"),
+                "lead_lock_tolerance_rad": ParameterValue(
+                    LaunchConfiguration("lead_lock_tolerance_rad"), value_type=float),
             }],
             output="screen"))
 
@@ -265,13 +278,38 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(bringup_share, "launch", "demo.launch.py")),
         launch_arguments={
+            "dual_arm": LaunchConfiguration("dual_arm"),
             "hardware_mode": hardware_mode,
             "robot_ip": robot_ip,
+            "left_robot_ip": LaunchConfiguration("left_robot_ip"),
+            "right_robot_ip": LaunchConfiguration("right_robot_ip"),
+            "second_arm_x": LaunchConfiguration("second_arm_x"),
+            "second_arm_y": LaunchConfiguration("second_arm_y"),
+            "second_arm_z": LaunchConfiguration("second_arm_z"),
             "use_rviz": use_rviz,
             "use_moveit": "true",
         }.items())
 
     return LaunchDescription([
+        DeclareLaunchArgument("dual_arm", default_value="true",
+                              description="Configure and launch dual cobot arms."),
+        DeclareLaunchArgument("left_robot_ip", default_value="192.168.58.2",
+                              description="IP address for Arm 1 (left)."),
+        DeclareLaunchArgument("right_robot_ip", default_value="192.168.58.3",
+                              description="IP address for Arm 2 (right)."),
+        DeclareLaunchArgument("second_arm_x", default_value="-0.75",
+                              description="Arm 2 separation distance along X axis in metres (-0.75 for 75cm to the left of Arm 1)."),
+        DeclareLaunchArgument("second_arm_y", default_value="0.0",
+                              description="Arm 2 separation distance along Y axis in metres."),
+        DeclareLaunchArgument("second_arm_z", default_value="0.0",
+                              description="Arm 2 separation distance along Z axis in metres."),
+        DeclareLaunchArgument("target_nominal_distance", default_value="0.0",
+                              description="Nominal target distance in metres for binocular gaze convergence (0.0 for parallel gaze in same direction)."),
+        DeclareLaunchArgument("dual_tracking_policy", default_value="first_arm_lead",
+                              choices=["first_arm_lead", "simultaneous"],
+                              description="Dual-arm co-tracking policy."),
+        DeclareLaunchArgument("lead_lock_tolerance_rad", default_value="0.10",
+                              description="Arm 1 alignment tolerance before Arm 2 tracks in first_arm_lead policy."),
         DeclareLaunchArgument("use_rviz", default_value="true"),
         DeclareLaunchArgument("hardware_mode", default_value="mock",
                               choices=["mock", "real"],

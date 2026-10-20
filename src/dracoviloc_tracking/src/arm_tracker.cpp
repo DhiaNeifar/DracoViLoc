@@ -34,57 +34,33 @@
 namespace fs = std::filesystem;
 
 // =============================================================================
-// arm_tracker  -  audio servo driven by the EKF fused bearing
+// arm_tracker  -  Single and Dual-Arm Coordinated Drone Tracking Controller
 //
-// WHAT CHANGED AND WHY
-// ====================
-// Previously this node consumed /audio/target_direction, a unit vector in the
-// world frame published by audio_target_tracker.py from raw /sst peaks. That
-// path had no classification gate, no motion model and no outlier rejection:
-// every acoustic peak drove the arm, reflections included.
-//
-// It now consumes /fused_target_pose from the EKF, which is gated on the AST
-// and GRE classifiers, smoothed by a constant angular velocity model, and
-// protected by chi-squared rejection of bearings inconsistent with the track.
-// When the vision team publishes /camera/yolo_detection, the EKF folds it in
-// and this node benefits without any change here.
-//
-// THREE CONVERSIONS THIS NODE NOW OWNS
-// ====================================
-// The old topic carried a unit vector already expressed in `world`. The EKF
-// publishes something different, so the work audio_target_tracker.py used to
-// do has moved in here:
-//
-//   1. ANGLES TO VECTOR. /fused_target_pose is a PointStamped where x is
-//      azimuth and y is elevation IN RADIANS, and z is a constant 1.0 marking
-//      a unit direction. It is NOT a Cartesian point. Reading point.x/y/z as
-//      coordinates yields a vector pointing nowhere near the target.
-//
-//   2. FRAME ROTATION. The angles are in the EKF's tracking frame (the
-//      microphone frame), not in `world`. A TF lookup rotates the direction.
-//      This replaces the old `frame_id != "world"` guard, which silently
-//      dropped anything not already in world.
-//
-//   3. VALIDITY BY TIMEOUT. The EKF has no /audio/target_valid equivalent; it
-//      simply stops publishing when it has nothing. Freshness of the last
-//      message now stands in for that flag. The legacy Bool subscription is
-//      kept so an external supervisor can still force a stop.
-//
-// The exponential smoothing is deliberately kept even though the EKF already
-// filters. It runs on the WORLD-frame vector, so it also absorbs jitter
-// introduced by the TF lookup itself, which the EKF cannot see. Set
-// smoothing_alpha to 1.0 to disable it and follow the EKF exactly.
+// Dual-arm coordination:
+// - Arm 1 (Left / Primary) carries the microphone array and camera sensors.
+//   It resolves target direction in world frame and servos joint1/joint4.
+// - Arm 2 (Right / Follower) receives target info from Arm 1.
+//   It computes parallax gaze convergence based on the -75 cm baseline (left of Arm 1)
+//   and target_nominal_distance (default 3.0 m).
+// - Co-tracking policy:
+//   "first_arm_lead" (default): Arm 1 turns first to lock on the drone within
+//   lead_lock_tolerance_rad (default 0.10 rad); once locked, Arm 2 slews to co-track.
+//   "simultaneous": Both arms slew immediately upon detection.
 // =============================================================================
 
 class ArmTracker : public rclcpp::Node {
 public:
   ArmTracker() : Node("arm_tracker") {
+    dual_arm_ = declare_parameter("dual_arm", false);
+    second_arm_x_ = declare_parameter("second_arm_x", -0.75);
+    second_arm_y_ = declare_parameter("second_arm_y", 0.0);
+    second_arm_z_ = declare_parameter("second_arm_z", 0.0);
+    target_nominal_distance_ = declare_parameter("target_nominal_distance", 0.0);
+    dual_tracking_policy_ = declare_parameter("dual_tracking_policy", std::string("first_arm_lead"));
+    lead_lock_tolerance_rad_ = declare_parameter("lead_lock_tolerance_rad", 0.10);
+
     target_timeout_ = declare_parameter("target_timeout", 0.75);
     smoothing_alpha_ = declare_parameter("smoothing_alpha", 0.50);
-    // Target-update deadband: the solved aim point only replaces the
-    // currently commanded one when it moves by more than this. There is no
-    // separate enter/exit threshold anymore -- Ruckig is driven continuously
-    // and settles on its own, so there is nothing to chatter between.
     angular_deadband_ = declare_parameter("angular_deadband", 0.003);
     motion_penalty_ = declare_parameter("motion_penalty", 0.015);
     servo_log_path_ = declare_parameter("servo_log_path", std::string(""));
@@ -94,23 +70,17 @@ public:
     max_jerk_ = declare_parameter("max_jerk", 80.0);
     max_tracking_error_ = declare_parameter("max_tracking_error", 0.50);
     world_frame_ = declare_parameter("world_frame", std::string("world"));
-    // Fallback only. The frame actually used is the one stamped on each
-    // incoming message, so this matters only if the EKF ships an empty
-    // frame_id.
-    tracking_frame_ = declare_parameter(
-      "tracking_frame", std::string("table_mic_link"));
+    tracking_frame_ = declare_parameter("tracking_frame", std::string("table_mic_link"));
     ekf_enabled_ = declare_parameter("ekf_enabled", true);
-    direct_classifier_source_ = declare_parameter(
-      "direct_classifier_source", std::string("gre"));
+    direct_classifier_source_ = declare_parameter("direct_classifier_source", std::string("gre"));
     direct_min_activity_ = declare_parameter("direct_min_activity", 0.10);
     direct_class_timeout_ = declare_parameter("direct_class_timeout", 5.0);
-    ekf_direction_log_path_ = declare_parameter(
-      "ekf_direction_log_path", std::string(""));
-    yolo_direction_log_path_ = declare_parameter(
-      "yolo_direction_log_path", std::string(""));
+    ekf_direction_log_path_ = declare_parameter("ekf_direction_log_path", std::string(""));
+    yolo_direction_log_path_ = declare_parameter("yolo_direction_log_path", std::string(""));
     require_home_ = declare_parameter("require_home_before_tracking", true);
     home_duration_s_ = declare_parameter("home_duration_s", 12.0);
     home_tolerance_rad_ = declare_parameter("home_tolerance_rad", 0.035);
+
     if (angular_deadband_ < 0.0) {
       throw std::invalid_argument("angular_deadband must be non-negative");
     }
@@ -123,14 +93,10 @@ public:
     if (command_rate_hz_ < 20.0 || command_rate_hz_ > 200.0) {
       throw std::invalid_argument("command_rate_hz must be between 20 and 200");
     }
-    if (direct_classifier_source_ != "gre" &&
-        direct_classifier_source_ != "ast" &&
-        direct_classifier_source_ != "either" &&
-        direct_classifier_source_ != "mobilenetv2" &&
-        direct_classifier_source_ != "yolo") {
-      throw std::invalid_argument(
-        "direct_classifier_source must be gre, ast, either, mobilenetv2, or yolo");
+    if (dual_tracking_policy_ != "first_arm_lead" && dual_tracking_policy_ != "simultaneous") {
+      throw std::invalid_argument("dual_tracking_policy must be 'first_arm_lead' or 'simultaneous'");
     }
+
     open_ekf_direction_log();
     open_yolo_direction_log();
     open_servo_log();
@@ -138,25 +104,29 @@ public:
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-    // Marks the one moment that is only visible inside this node: when the
-    // tracker actually decides to steer toward a new solved target, as
-    // opposed to merely receiving a direction update (dracoviloc_diagnostics
-    // observes /yolo/direction, /mobilenetv2/direction, and /ekf/direction
-    // directly for those "input received" events).
     events_pub_ = create_publisher<std_msgs::msg::String>("/tracking/events", 20);
-    command_pub_ = create_publisher<trajectory_msgs::msg::JointTrajectory>(
-      "/arm_controller/joint_trajectory", 10);
-    servo_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
-      "/arm_tracking_controller/commands", rclcpp::SensorDataQoS());
-    switch_callback_group_ = create_callback_group(
-      rclcpp::CallbackGroupType::Reentrant);
+
+    const std::string trajectory_topic = dual_arm_ ?
+      "/dual_arm_controller/joint_trajectory" : "/arm_controller/joint_trajectory";
+    const std::string servo_topic = dual_arm_ ?
+      "/dual_arm_tracking_controller/commands" : "/arm_tracking_controller/commands";
+
+    command_pub_ = create_publisher<trajectory_msgs::msg::JointTrajectory>(trajectory_topic, 10);
+    servo_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(servo_topic, rclcpp::SensorDataQoS());
+
+    switch_callback_group_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
     switch_client_ = create_client<controller_manager_msgs::srv::SwitchController>(
       "/controller_manager/switch_controller", rmw_qos_profile_services_default,
       switch_callback_group_);
+
     otg_ = std::make_unique<ruckig::Ruckig<6>>(1.0 / command_rate_hz_);
+    if (dual_arm_) {
+      otg_right_ = std::make_unique<ruckig::Ruckig<6>>(1.0 / command_rate_hz_);
+    }
+
     joint_sub_ = create_subscription<sensor_msgs::msg::JointState>(
       "/joint_states", rclcpp::SensorDataQoS(),
-      [this](const sensor_msgs::msg::JointState::SharedPtr msg) {joint_callback(*msg);});
+      [this](const sensor_msgs::msg::JointState::SharedPtr msg) { joint_callback(*msg); });
 
     if (ekf_enabled_) {
       fused_sub_ = create_subscription<geometry_msgs::msg::Vector3Stamped>(
@@ -174,50 +144,51 @@ public:
     } else {
       const auto subscribe = [this](const std::string & topic, auto & sub) {
         sub = create_subscription<geometry_msgs::msg::Vector3Stamped>(topic, 10,
-          [this](const geometry_msgs::msg::Vector3Stamped::SharedPtr msg) {direction_callback(*msg);});
+          [this](const geometry_msgs::msg::Vector3Stamped::SharedPtr msg) { direction_callback(*msg); });
       };
       if (direct_classifier_source_ == "yolo") subscribe("/yolo/direction", yolo_sub_);
-      if (direct_classifier_source_ == "mobilenetv2") {
-        subscribe("/mobilenetv2/direction", mobilenetv2_sub_);
-      }
+      if (direct_classifier_source_ == "mobilenetv2") subscribe("/mobilenetv2/direction", mobilenetv2_sub_);
       if (direct_classifier_source_ == "ast" || direct_classifier_source_ == "either") subscribe("/ast/direction", ast_sub_);
       if (direct_classifier_source_ == "gre" || direct_classifier_source_ == "either") subscribe("/gre/direction", gre_sub_);
     }
 
-    // Kept for compatibility: an external supervisor can still veto motion.
-    // Nothing in the EKF chain publishes it, so it defaults to permitting.
     valid_sub_ = create_subscription<std_msgs::msg::Bool>(
       "/audio/target_valid", 10,
       [this](const std_msgs::msg::Bool::SharedPtr msg) {
         std::lock_guard<std::mutex> lock(mutex_);
         external_veto_ = !msg->data;
       });
+
     home_service_ = create_service<std_srvs::srv::Trigger>(
       "/demo/home",
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
              std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
         request_home(*response);
       });
+
     tracking_service_ = create_service<std_srvs::srv::SetBool>(
       "/demo/tracking",
       [this](const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
              std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
         set_tracking(request->data, *response);
       });
+
     const auto command_period = std::chrono::milliseconds(
       static_cast<int64_t>(std::lround(1000.0 / command_rate_hz_)));
-    timer_ = create_wall_timer(command_period, [this]() {update();});
-    RCLCPP_INFO(get_logger(), "Jerk-limited position servo at %.1f Hz in %s mode%s; "
-      "tracking starts disabled. Use /demo/home, then /demo/tracking true. "
-      "joint1/joint4 track; joint2/joint3/joint5/joint6 remain locked",
-      command_rate_hz_,
+    timer_ = create_wall_timer(command_period, [this]() { update(); });
+
+    RCLCPP_INFO(get_logger(),
+      "ArmTracker initialized [%s mode]. Mode: %s. Policy: %s (nom_dist: %.1fm). Command rate: %.1f Hz.",
+      dual_arm_ ? "DUAL-ARM" : "SINGLE-ARM",
       ekf_enabled_ ? "EKF" : "direct",
-      ekf_enabled_ ? "" : (" (source=" + direct_classifier_source_ + ")").c_str());
+      dual_arm_ ? dual_tracking_policy_.c_str() : "N/A",
+      target_nominal_distance_,
+      command_rate_hz_);
   }
 
 private:
-  enum class ControlState {Trajectory, Tracking, Stopping};
-  struct WristSample {double q4; Eigen::Vector3d normal;};
+  enum class ControlState { Trajectory, Tracking, Stopping };
+  struct WristSample { double q4; Eigen::Vector3d normal; };
   struct Verdict {
     bool is_drone;
     double confidence;
@@ -231,102 +202,33 @@ private:
     return Eigen::AngleAxisd(value, Eigen::Vector3d::UnitZ());
   }
 
-  void open_ekf_direction_log()
-  {
-    if (ekf_direction_log_path_.empty()) {
-      return;
-    }
+  void open_ekf_direction_log() {
+    if (ekf_direction_log_path_.empty()) return;
     const fs::path path(ekf_direction_log_path_);
-    if (!path.parent_path().empty()) {
-      fs::create_directories(path.parent_path());
-    }
+    if (!path.parent_path().empty()) fs::create_directories(path.parent_path());
     const bool write_header = !fs::exists(path) || fs::file_size(path) == 0;
     ekf_direction_log_.open(path, std::ios::app);
-    if (!ekf_direction_log_) {
-      throw std::runtime_error("cannot open EKF direction log: " + path.string());
-    }
+    if (!ekf_direction_log_) throw std::runtime_error("cannot open EKF direction log: " + path.string());
     if (write_header) {
-      ekf_direction_log_
-        << "receipt_sec,receipt_nanosec,message_sec,message_nanosec,frame_id,"
-        << "raw_x,raw_y,raw_z,world_x,world_y,world_z,"
-        << "filtered_x,filtered_y,filtered_z,input_jump_deg,world_jump_deg,filtered_step_deg,"
-        << "have_joints,joint1,joint4\n";
+      ekf_direction_log_ << "receipt_sec,receipt_nanosec,message_sec,message_nanosec,frame_id,x,y,z\n";
     }
-    ekf_direction_log_ << std::setprecision(17);
-    ekf_direction_log_.flush();
-    RCLCPP_INFO(get_logger(), "Logging every EKF direction sample to %s",
-      path.c_str());
   }
 
-  void write_ekf_direction_log(
-    const geometry_msgs::msg::Vector3Stamped & message,
-    const rclcpp::Time & receipt,
-    const Eigen::Vector3d & input_direction,
-    const Eigen::Vector3d & previous_input_direction,
-    const Eigen::Vector3d & world_direction,
-    const Eigen::Vector3d & previous_world_direction,
-    const Eigen::Vector3d & previous_filtered,
-    const Eigen::Vector3d & filtered_direction,
-    bool had_previous_ekf_direction,
-    bool had_previous_direction,
-    bool have_joints,
-    const std::array<double, 6> & joints)
-  {
-    if (!ekf_direction_log_.is_open()) {
-      return;
-    }
-    const double input_jump = had_previous_ekf_direction ?
-      angle(previous_input_direction, input_direction) * 180.0 / M_PI : 0.0;
-    const double world_jump = had_previous_ekf_direction ?
-      angle(previous_world_direction, world_direction) * 180.0 / M_PI : 0.0;
-    const double filtered_step = had_previous_direction ?
-      angle(previous_filtered, filtered_direction) * 180.0 / M_PI : 0.0;
-    const int64_t receipt_nanoseconds = receipt.nanoseconds();
-    ekf_direction_log_
-      << receipt_nanoseconds / 1000000000LL << ','
-      << receipt_nanoseconds % 1000000000LL << ','
-      << message.header.stamp.sec << ',' << message.header.stamp.nanosec << ','
-      << message.header.frame_id << ','
-      << message.vector.x << ',' << message.vector.y << ',' << message.vector.z << ','
-      << world_direction.x() << ',' << world_direction.y() << ',' << world_direction.z() << ','
-      << filtered_direction.x() << ',' << filtered_direction.y() << ','
-      << filtered_direction.z() << ',' << input_jump << ',' << world_jump << ','
-      << filtered_step << ','
-      << (have_joints ? 1 : 0) << ',' << joints[0] << ',' << joints[3] << '\n';
-    ekf_direction_log_.flush();
-  }
-
-  void open_yolo_direction_log()
-  {
-    if (yolo_direction_log_path_.empty()) {
-      return;
-    }
+  void open_yolo_direction_log() {
+    if (yolo_direction_log_path_.empty()) return;
     const fs::path path(yolo_direction_log_path_);
-    if (!path.parent_path().empty()) {
-      fs::create_directories(path.parent_path());
-    }
+    if (!path.parent_path().empty()) fs::create_directories(path.parent_path());
     const bool write_header = !fs::exists(path) || fs::file_size(path) == 0;
     yolo_direction_log_.open(path, std::ios::app);
-    if (!yolo_direction_log_) {
-      throw std::runtime_error("cannot open YOLO direction log: " + path.string());
-    }
+    if (!yolo_direction_log_) throw std::runtime_error("cannot open YOLO direction log: " + path.string());
     if (write_header) {
-      yolo_direction_log_
-        << "receipt_sec,receipt_nanosec,message_sec,message_nanosec,frame_id,"
-        << "x,y,z,jump_deg\n";
+      yolo_direction_log_ << "receipt_sec,receipt_nanosec,message_sec,message_nanosec,frame_id,x,y,z,jump_deg\n";
     }
-    yolo_direction_log_ << std::setprecision(17);
-    yolo_direction_log_.flush();
-    RCLCPP_INFO(get_logger(), "Logging every YOLO direction sample to %s",
-      path.c_str());
   }
 
-  void log_yolo_direction(const geometry_msgs::msg::Vector3Stamped & message)
-  {
+  void log_yolo_direction(const geometry_msgs::msg::Vector3Stamped & message) {
     Eigen::Vector3d direction(message.vector.x, message.vector.y, message.vector.z);
-    if (direction.norm() < 1e-6 || !yolo_direction_log_.is_open()) {
-      return;
-    }
+    if (direction.norm() < 1e-6 || !yolo_direction_log_.is_open()) return;
     direction.normalize();
     const auto receipt = now();
     const double jump = have_previous_yolo_direction_ ?
@@ -335,8 +237,7 @@ private:
     have_previous_yolo_direction_ = true;
     const int64_t receipt_nanoseconds = receipt.nanoseconds();
     yolo_direction_log_
-      << receipt_nanoseconds / 1000000000LL << ','
-      << receipt_nanoseconds % 1000000000LL << ','
+      << receipt_nanoseconds / 1000000000LL << ',' << receipt_nanoseconds % 1000000000LL << ','
       << message.header.stamp.sec << ',' << message.header.stamp.nanosec << ','
       << message.header.frame_id << ','
       << message.vector.x << ',' << message.vector.y << ',' << message.vector.z << ','
@@ -344,102 +245,79 @@ private:
     yolo_direction_log_.flush();
   }
 
-  void open_servo_log()
-  {
-    if (servo_log_path_.empty()) {
-      return;
-    }
+  void open_servo_log() {
+    if (servo_log_path_.empty()) return;
     const fs::path path(servo_log_path_);
-    if (!path.parent_path().empty()) {
-      fs::create_directories(path.parent_path());
-    }
+    if (!path.parent_path().empty()) fs::create_directories(path.parent_path());
     const bool write_header = !fs::exists(path) || fs::file_size(path) == 0;
     servo_log_.open(path, std::ios::app);
-    if (!servo_log_) {
-      throw std::runtime_error("cannot open servo log: " + path.string());
-    }
+    if (!servo_log_) throw std::runtime_error("cannot open servo log: " + path.string());
     if (write_header) {
       servo_log_
-        << "time_sec,control_state,control_interface,target_available,"
+        << "time_sec,control_state,target_available,"
         << "target_q1,target_q4,actual_q1,actual_q4,"
-        << "command_q1,command_q4,output_velocity_q1,output_velocity_q4,"
-        << "output_acceleration_q1,output_acceleration_q4,output_jerk_q1,output_jerk_q4,"
-        << "pointing_error_deg,solution_error_deg,ruckig_result\n";
+        << "command_q1,command_q4,pointing_error_deg\n";
     }
-    servo_log_ << std::setprecision(17);
-    servo_log_.flush();
-    RCLCPP_INFO(get_logger(), "Logging every servo tick to %s", path.c_str());
   }
 
-  // Jerk is not a Ruckig output state (only an input constraint), so it is
-  // derived here by differencing the commanded acceleration between ticks at
-  // the fixed command_rate_hz_ period, rather than from Ruckig directly.
-  std::array<double, 6> compute_jerk(const std::array<double, 6> & acceleration)
+  std::array<double, 6> compute_jerk(
+    const std::array<double, 6> & acceleration,
+    std::array<double, 6> & prev_acc, bool & have_prev)
   {
     std::array<double, 6> jerk {};
-    if (have_previous_output_acceleration_) {
+    if (have_prev) {
       const double dt = 1.0 / command_rate_hz_;
       for (std::size_t i = 0; i < jerk.size(); ++i) {
-        jerk[i] = (acceleration[i] - previous_output_acceleration_[i]) / dt;
+        jerk[i] = (acceleration[i] - prev_acc[i]) / dt;
       }
     }
-    previous_output_acceleration_ = acceleration;
-    have_previous_output_acceleration_ = true;
+    prev_acc = acceleration;
+    have_prev = true;
     return jerk;
   }
 
   void write_servo_log(
     ControlState control_state, bool target_available,
     const std::array<double, 6> & target, const std::array<double, 6> & actual,
-    const std::array<double, 6> & acceleration, const std::array<double, 6> & jerk,
-    double pointing_error, double solution_error, ruckig::Result result)
+    double pointing_error)
   {
-    if (!servo_log_.is_open()) {
-      return;
-    }
+    if (!servo_log_.is_open()) return;
     const char * state =
       control_state == ControlState::Tracking ? "tracking" :
       (control_state == ControlState::Stopping ? "stopping" : "trajectory");
-    const char * interface =
-      servo_input_.control_interface == ruckig::ControlInterface::Velocity ?
-      "velocity" : "position";
     servo_log_
-      << now().seconds() << ',' << state << ',' << interface << ','
+      << now().seconds() << ',' << state << ','
       << (target_available ? 1 : 0) << ','
       << target[0] << ',' << target[3] << ','
       << actual[0] << ',' << actual[3] << ','
       << servo_command_[0] << ',' << servo_command_[3] << ','
-      << servo_output_.new_velocity[0] << ',' << servo_output_.new_velocity[3] << ','
-      << acceleration[0] << ',' << acceleration[3] << ','
-      << jerk[0] << ',' << jerk[3] << ','
-      << pointing_error * 180.0 / M_PI << ',' << solution_error * 180.0 / M_PI << ','
-      << static_cast<int>(result) << '\n';
+      << pointing_error * 180.0 / M_PI << '\n';
     servo_log_.flush();
   }
 
   bool publish_trajectory(
-    const std::array<double, 6> & target, double duration_s,
-    const std::array<double, 6> & endpoint_velocity = {})
+    const std::vector<std::string> & joint_names,
+    const std::vector<double> & target_positions,
+    double duration_s)
   {
     if (command_pub_->get_subscription_count() == 0) {
-      RCLCPP_ERROR(get_logger(), "arm_controller command topic has no subscriber");
+      RCLCPP_ERROR(get_logger(), "Trajectory controller command topic has no subscriber");
       return false;
     }
     trajectory_msgs::msg::JointTrajectory command;
-    command.joint_names.assign(names_.begin(), names_.end());
+    command.joint_names = joint_names;
     trajectory_msgs::msg::JointTrajectoryPoint point;
-    point.positions.assign(target.begin(), target.end());
-    point.velocities.assign(endpoint_velocity.begin(), endpoint_velocity.end());
+    point.positions = target_positions;
+    point.velocities.assign(target_positions.size(), 0.0);
     point.time_from_start = rclcpp::Duration::from_seconds(duration_s);
     command.points.push_back(point);
     command_pub_->publish(command);
     return true;
   }
 
-  void publish_servo_command(const std::array<double, 6> & positions)
-  {
+  void publish_servo_command(const std::vector<double> & positions) {
     std_msgs::msg::Float64MultiArray command;
-    command.data.assign(positions.begin(), positions.end());
+    command.data = positions;
     servo_pub_->publish(command);
   }
 
@@ -470,28 +348,41 @@ private:
     return true;
   }
 
-  void initialize_servo(const std::array<double, 6> & position)
+  void initialize_servo_arm(
+    ruckig::InputParameter<6> & input,
+    std::array<double, 6> & command,
+    ruckig::Ruckig<6> & otg,
+    const std::array<double, 6> & position)
   {
-    configure_fixed_pose(position);
-    servo_input_.control_interface = ruckig::ControlInterface::Position;
-    servo_input_.current_position = position;
-    servo_input_.current_velocity.fill(0.0);
-    servo_input_.current_acceleration.fill(0.0);
-    servo_input_.target_position = position;
-    servo_input_.target_velocity.fill(0.0);
-    servo_input_.target_acceleration.fill(0.0);
-    servo_input_.max_velocity.fill(max_velocity_);
-    servo_input_.max_acceleration.fill(max_acceleration_);
-    servo_input_.max_jerk.fill(max_jerk_);
-    servo_input_.enabled = std::array<bool, 6>{true, false, false, true, false, false};
-    servo_input_.synchronization = ruckig::Synchronization::Time;
-    servo_command_ = position;
-    otg_->reset();
+    input.control_interface = ruckig::ControlInterface::Position;
+    input.current_position = position;
+    input.current_velocity.fill(0.0);
+    input.current_acceleration.fill(0.0);
+    input.target_position = position;
+    input.target_velocity.fill(0.0);
+    input.target_acceleration.fill(0.0);
+    input.max_velocity.fill(max_velocity_);
+    input.max_acceleration.fill(max_acceleration_);
+    input.max_jerk.fill(max_jerk_);
+    input.enabled = std::array<bool, 6>{true, false, false, true, false, false};
+    input.synchronization = ruckig::Synchronization::Time;
+    command = position;
+    otg.reset();
   }
 
-  void request_home(std_srvs::srv::Trigger::Response & response)
+  void initialize_servo(
+    const std::array<double, 6> & position_left,
+    const std::array<double, 6> & position_right = {})
   {
-    std::array<double, 6> current;
+    configure_fixed_pose(position_left, fixed_, wrist_lookup_);
+    initialize_servo_arm(servo_input_, servo_command_, *otg_, position_left);
+    if (dual_arm_) {
+      configure_fixed_pose(position_right, fixed_right_, wrist_lookup_right_);
+      initialize_servo_arm(servo_input_right_, servo_command_right_, *otg_right_, position_right);
+    }
+  }
+
+  void request_home(std_srvs::srv::Trigger::Response & response) {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!have_joints_) {
@@ -501,31 +392,43 @@ private:
       }
       if (control_state_ != ControlState::Trajectory) {
         response.success = false;
-        response.message =
-          "Cannot home while tracking controller is active; disable /demo/tracking first";
+        response.message = "Cannot home while tracking controller is active; disable /demo/tracking first";
         return;
       }
       have_direction_ = false;
       home_requested_ = true;
       home_reached_ = false;
-      current = current_;
+      arm1_locked_ = false;
     }
-    if (!publish_trajectory(home_, home_duration_s_)) {
+
+    bool published = false;
+    if (!dual_arm_) {
+      published = publish_trajectory(names_single_, {home_.begin(), home_.end()}, home_duration_s_);
+    } else {
+      std::vector<std::string> dual_names;
+      dual_names.insert(dual_names.end(), names_left_.begin(), names_left_.end());
+      dual_names.insert(dual_names.end(), names_right_.begin(), names_right_.end());
+      std::vector<double> dual_home;
+      dual_home.insert(dual_home.end(), home_.begin(), home_.end());
+      dual_home.insert(dual_home.end(), home_.begin(), home_.end());
+      published = publish_trajectory(dual_names, dual_home, home_duration_s_);
+    }
+
+    if (!published) {
       std::lock_guard<std::mutex> lock(mutex_);
       home_requested_ = false;
       response.success = false;
-      response.message = "Cannot home: arm_controller is unavailable";
+      response.message = "Cannot home: trajectory controller is unavailable";
       return;
     }
     response.success = true;
-    response.message = "Home trajectory sent; wait for the tracker to report home reached";
-    RCLCPP_WARN(get_logger(), "Home requested from q=[%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
-      current[0], current[1], current[2], current[3], current[4], current[5]);
+    response.message = "Home trajectory sent; waiting for arms to reach home pose";
+    RCLCPP_INFO(get_logger(), "Home trajectory commanded for %s.", dual_arm_ ? "dual arms" : "arm");
   }
 
-  void set_tracking(bool enable, std_srvs::srv::SetBool::Response & response)
-  {
-    std::array<double, 6> seed {};
+  void set_tracking(bool enable, std_srvs::srv::SetBool::Response & response) {
+    std::array<double, 6> seed_left {};
+    std::array<double, 6> seed_right {};
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (enable) {
@@ -536,7 +439,7 @@ private:
         }
         if (control_state_ == ControlState::Stopping) {
           response.success = false;
-          response.message = "Tracking is still stopping; retry after arm_controller is active";
+          response.message = "Tracking is still stopping; retry after trajectory controller is active";
           return;
         }
         if (!have_joints_) {
@@ -546,16 +449,18 @@ private:
         }
         if (require_home_ && !home_reached_) {
           response.success = false;
-          response.message = "Cannot start tracking: call /demo/home and wait until it reaches home";
+          response.message = "Cannot start tracking: call /demo/home and wait until home is reached";
           return;
         }
-        if (std::abs(current_[3]) > M_PI_2) {
+        if (std::abs(current_[3]) > M_PI_2 || (dual_arm_ && std::abs(current_right_[3]) > M_PI_2)) {
           response.success = false;
           response.message = "Cannot start tracking: joint4 is outside the tracker range";
           return;
         }
         have_direction_ = false;
-        seed = current_;
+        arm1_locked_ = false;
+        seed_left = current_;
+        if (dual_arm_) seed_right = current_right_;
       } else {
         if (control_state_ == ControlState::Trajectory) {
           response.success = true;
@@ -569,43 +474,44 @@ private:
         }
         control_state_ = ControlState::Stopping;
         have_direction_ = false;
-        begin_velocity_stop();
+        arm1_locked_ = false;
+        begin_velocity_stop(servo_input_);
+        if (dual_arm_) begin_velocity_stop(servo_input_right_);
         response.success = true;
-        response.message = "Tracking is decelerating; arm_controller will reactivate automatically";
+        response.message = "Tracking is decelerating; trajectory controller will reactivate automatically";
         RCLCPP_WARN(get_logger(), "Tracking stop requested; decelerating before controller switch");
         return;
       }
     }
 
-    initialize_servo(seed);
+    initialize_servo(seed_left, seed_right);
     std::string error;
-    if (!switch_controllers(
-        {"arm_tracking_controller"}, {"arm_controller"}, error)) {
+    const std::string tracking_ctrl = dual_arm_ ? "dual_arm_tracking_controller" : "arm_tracking_controller";
+    const std::string traj_ctrl = dual_arm_ ? "dual_arm_controller" : "arm_controller";
+
+    if (!switch_controllers({tracking_ctrl}, {traj_ctrl}, error)) {
       response.success = false;
       response.message = "Cannot start tracking: " + error;
       RCLCPP_ERROR(get_logger(), "%s", response.message.c_str());
       return;
     }
-    publish_servo_command(seed);
+
+    if (!dual_arm_) {
+      publish_servo_command({seed_left.begin(), seed_left.end()});
+    } else {
+      std::vector<double> dual_seed;
+      dual_seed.insert(dual_seed.end(), seed_left.begin(), seed_left.end());
+      dual_seed.insert(dual_seed.end(), seed_right.begin(), seed_right.end());
+      publish_servo_command(dual_seed);
+    }
+
     {
       std::lock_guard<std::mutex> lock(mutex_);
       control_state_ = ControlState::Tracking;
     }
     response.success = true;
     response.message = "Tracking armed; waiting for a fresh direction";
-    RCLCPP_WARN(get_logger(),
-      "Tracking enabled with arm_tracking_controller; stale directions were discarded");
-  }
-
-  void yolo_callback(const geometry_msgs::msg::PoseArray & msg) {
-    if (msg.poses.empty()) {return;}
-    const auto & point = msg.poses.front().position;
-    const Eigen::Vector3d local(point.x, point.y, point.z);
-    if (local.norm() < 1e-6) {return;}
-    accept_local_direction(local.normalized(), msg.header.frame_id);
-    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
-      "direct YOLO target ray=(%.3f, %.3f, %.3f)",
-      point.x, point.y, point.z);
+    RCLCPP_INFO(get_logger(), "Tracking enabled with %s", tracking_ctrl.c_str());
   }
 
   void direction_callback(const geometry_msgs::msg::Vector3Stamped & msg) {
@@ -614,99 +520,14 @@ private:
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
       "Received tracking direction on %s: (%.3f, %.3f, %.3f)",
       msg.header.frame_id.c_str(), msg.vector.x, msg.vector.y, msg.vector.z);
-    accept_local_direction(
-      local.normalized(), msg.header.frame_id, ekf_enabled_ ? &msg : nullptr);
+    accept_local_direction(local.normalized(), msg.header.frame_id);
   }
 
-  void classifier_callback(
-    const geometry_msgs::msg::Vector3Stamped & msg,
-    Verdict & verdict, bool & have_verdict)
-  {
-    verdict = Verdict{msg.vector.y >= 0.5, msg.vector.z, now()};
-    have_verdict = true;
-  }
-
-  const Verdict * live_verdict(const rclcpp::Time & stamp) {
-    const Verdict * best = nullptr;
-    const auto consider = [&](const Verdict & verdict, bool have_verdict) {
-      if (!have_verdict) {return;}
-      if (!verdict.is_drone ||
-          (stamp - verdict.received).seconds() > direct_class_timeout_) {return;}
-      if (best == nullptr || verdict.confidence > best->confidence) {best = &verdict;}
-    };
-    if (direct_classifier_source_ == "ast" || direct_classifier_source_ == "either") {
-      consider(ast_verdict_, have_ast_verdict_);
-    }
-    if (direct_classifier_source_ == "gre" || direct_classifier_source_ == "either") {
-      consider(gre_verdict_, have_gre_verdict_);
-    }
-    if (direct_classifier_source_ == "mobilenetv2") {
-      consider(mobilenetv2_verdict_, have_mobilenetv2_verdict_);
-    }
-    return best;
-  }
-
-  void sst_callback(const odas_ros_msgs::msg::OdasSstArrayStamped & msg) {
-    const auto stamp = now();
-    const odas_ros_msgs::msg::OdasSst * selected = nullptr;
-    const auto * verdict = live_verdict(stamp);
-    for (const auto & source : msg.sources) {
-      if (source.activity < direct_min_activity_) {continue;}
-      if (verdict != nullptr &&
-          (selected == nullptr || source.activity > selected->activity)) {
-        selected = &source;
-      }
-    }
-    if (selected == nullptr) {
-      RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 5000,
-        "direct mode waiting for %s detection and an active ODAS direction",
-        direct_classifier_source_.c_str());
-      return;
-    }
-    const double norm = std::sqrt(
-      selected->x * selected->x + selected->y * selected->y + selected->z * selected->z);
-    if (norm < 1e-6) {return;}
-    geometry_msgs::msg::PointStamped target;
-    target.header = msg.header;
-    target.point.x = std::atan2(selected->y, selected->x);
-    target.point.y = std::asin(std::clamp(selected->z / norm, -1.0, 1.0));
-    target.point.z = 1.0;
-    fused_callback(target);
-    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
-      "direct target confidence=%.2f activity=%.2f az=%.1fdeg el=%.1fdeg",
-      verdict->confidence, selected->activity,
-      target.point.x * 180.0 / M_PI, target.point.y * 180.0 / M_PI);
-  }
-
-  // Conversions 1 and 2: azimuth/elevation in the tracking frame become a
-  // unit vector in the world frame.
-  void fused_callback(const geometry_msgs::msg::PointStamped & msg) {
-    const double az = msg.point.x;
-    const double el = msg.point.y;
-    // point.z is always 1.0 and marks a unit direction. It is NOT a range,
-    // and must not enter the geometry.
-    const double ce = std::cos(el);
-    const Eigen::Vector3d local(ce * std::cos(az), ce * std::sin(az), std::sin(el));
-
-    accept_local_direction(local, msg.header.frame_id);
-  }
-
-  void accept_local_direction(
-    const Eigen::Vector3d & local, const std::string & frame_id,
-    const geometry_msgs::msg::Vector3Stamped * ekf_message = nullptr)
-  {
-
-    const std::string source =
-      frame_id.empty() ? tracking_frame_ : frame_id;
-
+  void accept_local_direction(const Eigen::Vector3d & local, const std::string & frame_id) {
+    const std::string source = frame_id.empty() ? tracking_frame_ : frame_id;
     Eigen::Vector3d world_dir;
     try {
-      // Latest available transform rather than the message stamp: the arm is
-      // moving, and with use_sim_time the exact stamp is frequently just
-      // outside the buffer. A few milliseconds of TF staleness costs far less
-      // than dropping the measurement entirely.
-      const auto tf = tf_buffer_->lookupTransform(
-        world_frame_, source, tf2::TimePointZero);
+      const auto tf = tf_buffer_->lookupTransform(world_frame_, source, tf2::TimePointZero);
       const auto & q = tf.transform.rotation;
       const Eigen::Quaterniond rotation(q.w, q.x, q.y, q.z);
       world_dir = (rotation * local).normalized();
@@ -716,53 +537,19 @@ private:
       return;
     }
 
-    if (world_dir.norm() < 1e-6) {return;}
+    if (world_dir.norm() < 1e-6) return;
 
     const auto receipt = now();
-    Eigen::Vector3d previous_input_direction;
-    Eigen::Vector3d previous_world_direction;
-    Eigen::Vector3d previous_filtered;
-    Eigen::Vector3d filtered;
-    std::array<double, 6> joints {};
-    bool had_previous_ekf_direction = false;
-    bool had_previous_direction = false;
-    bool have_joints = false;
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      had_previous_direction = have_direction_;
-      previous_filtered = had_previous_direction ? filtered_direction_ : world_dir;
-      if (ekf_message != nullptr) {
-        had_previous_ekf_direction = have_previous_ekf_world_direction_;
-        previous_input_direction = had_previous_ekf_direction ?
-          previous_ekf_input_direction_ : local;
-        previous_world_direction = had_previous_ekf_direction ?
-          previous_ekf_world_direction_ : world_dir;
-        previous_ekf_input_direction_ = local;
-        previous_ekf_world_direction_ = world_dir;
-        have_previous_ekf_world_direction_ = true;
-      }
-      if (!have_direction_) {
-        filtered_direction_ = world_dir;
-        have_direction_ = true;
-      } else {
-        // Smoothing on the world-frame vector absorbs TF jitter, which the EKF
-        // cannot see. alpha = 1.0 disables it.
-        filtered_direction_ = (
-          (1.0 - smoothing_alpha_) * filtered_direction_ +
-          smoothing_alpha_ * world_dir).normalized();
-      }
-      filtered = filtered_direction_;
-      joints = current_;
-      have_joints = have_joints_;
-      last_target_ = receipt;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!have_direction_) {
+      filtered_direction_ = world_dir;
+      have_direction_ = true;
+    } else {
+      filtered_direction_ = (
+        (1.0 - smoothing_alpha_) * filtered_direction_ +
+        smoothing_alpha_ * world_dir).normalized();
     }
-    if (ekf_message != nullptr) {
-      write_ekf_direction_log(
-        *ekf_message, receipt, local, previous_input_direction,
-        world_dir, previous_world_direction,
-        previous_filtered, filtered, had_previous_ekf_direction,
-        had_previous_direction, have_joints, joints);
-    }
+    last_target_ = receipt;
   }
 
   Eigen::Vector3d microphone_normal(const std::array<double, 6> & q) const {
@@ -779,66 +566,96 @@ private:
   }
 
   void joint_callback(const sensor_msgs::msg::JointState & msg) {
-    std::array<double, 6> ordered {};
-    for (std::size_t i = 0; i < names_.size(); ++i) {
-      const auto found = std::find(msg.name.begin(), msg.name.end(), names_[i]);
-      if (found == msg.name.end()) {return;}
-      ordered[i] = msg.position[std::distance(msg.name.begin(), found)];
+    if (!dual_arm_) {
+      std::array<double, 6> ordered {};
+      for (std::size_t i = 0; i < names_single_.size(); ++i) {
+        const auto found = std::find(msg.name.begin(), msg.name.end(), names_single_[i]);
+        if (found == msg.name.end()) return;
+        ordered[i] = msg.position[std::distance(msg.name.begin(), found)];
+      }
+      std::lock_guard<std::mutex> lock(mutex_);
+      current_ = ordered;
+      if (!have_joints_) {
+        configure_fixed_pose(ordered, fixed_, wrist_lookup_);
+      }
+      if (home_requested_ && at_home(ordered)) {
+        home_requested_ = false;
+        home_reached_ = true;
+        configure_fixed_pose(ordered, fixed_, wrist_lookup_);
+        RCLCPP_WARN(get_logger(), "Home reached; use /demo/tracking with data: true to arm tracking");
+      }
+      have_joints_ = true;
+    } else {
+      std::array<double, 6> left_ordered {};
+      std::array<double, 6> right_ordered {};
+      for (std::size_t i = 0; i < names_left_.size(); ++i) {
+        const auto found = std::find(msg.name.begin(), msg.name.end(), names_left_[i]);
+        if (found == msg.name.end()) return;
+        left_ordered[i] = msg.position[std::distance(msg.name.begin(), found)];
+      }
+      for (std::size_t i = 0; i < names_right_.size(); ++i) {
+        const auto found = std::find(msg.name.begin(), msg.name.end(), names_right_[i]);
+        if (found == msg.name.end()) return;
+        right_ordered[i] = msg.position[std::distance(msg.name.begin(), found)];
+      }
+      std::lock_guard<std::mutex> lock(mutex_);
+      current_ = left_ordered;
+      current_right_ = right_ordered;
+      if (!have_joints_) {
+        configure_fixed_pose(left_ordered, fixed_, wrist_lookup_);
+        configure_fixed_pose(right_ordered, fixed_right_, wrist_lookup_right_);
+      }
+      if (home_requested_ && at_home(left_ordered) && at_home(right_ordered)) {
+        home_requested_ = false;
+        home_reached_ = true;
+        configure_fixed_pose(left_ordered, fixed_, wrist_lookup_);
+        configure_fixed_pose(right_ordered, fixed_right_, wrist_lookup_right_);
+        RCLCPP_WARN(get_logger(), "Dual arms reached home; use /demo/tracking with data: true to arm tracking");
+      }
+      have_joints_ = true;
     }
-    std::lock_guard<std::mutex> lock(mutex_); current_ = ordered;
-    if (!have_joints_) {
-      configure_fixed_pose(ordered);
-    }
-    if (home_requested_ && at_home(ordered)) {
-      home_requested_ = false;
-      home_reached_ = true;
-      configure_fixed_pose(ordered);
-      RCLCPP_WARN(get_logger(), "Home reached; use /demo/tracking with data: true to arm tracking");
-    }
-    have_joints_ = true;
   }
 
-  bool at_home(const std::array<double, 6> & joints) const
-  {
+  bool at_home(const std::array<double, 6> & joints) const {
     for (std::size_t index = 0; index < joints.size(); ++index) {
-      if (std::abs(std::remainder(joints[index] - home_[index], 2.0 * M_PI)) >
-          home_tolerance_rad_) {
+      if (std::abs(std::remainder(joints[index] - home_[index], 2.0 * M_PI)) > home_tolerance_rad_) {
         return false;
       }
     }
     return true;
   }
 
-  void configure_fixed_pose(const std::array<double, 6> & joints)
+  void configure_fixed_pose(
+    const std::array<double, 6> & joints,
+    std::array<double, 6> & fixed_out,
+    std::vector<WristSample> & lookup_out)
   {
-    fixed_ = joints;
-    wrist_lookup_.clear();
-    wrist_lookup_.reserve(160);
+    fixed_out = joints;
+    lookup_out.clear();
+    lookup_out.reserve(160);
     for (double q4 = -M_PI_2; q4 <= M_PI_2; q4 += 0.02) {
-      auto trial = fixed_;
+      auto trial = fixed_out;
       trial[0] = 0.0;
       trial[3] = q4;
-      wrist_lookup_.push_back({q4, microphone_normal(trial)});
+      lookup_out.push_back({q4, microphone_normal(trial)});
     }
-    RCLCPP_INFO(get_logger(), "Locked q2=%.3f q3=%.3f q5=%.3f q6=%.3f",
-      fixed_[1], fixed_[2], fixed_[4], fixed_[5]);
   }
 
   std::array<double, 6> solve(
-    const std::array<double, 6> & current, const Eigen::Vector3d & desired) const
+    const std::array<double, 6> & current,
+    const Eigen::Vector3d & desired,
+    const std::array<double, 6> & fixed,
+    const std::vector<WristSample> & lookup) const
   {
     auto best = current;
     double best_cost = std::numeric_limits<double>::infinity();
     const double desired_yaw = std::atan2(desired.y(), desired.x());
     const auto evaluate = [&](double q4) {
-      auto trial = fixed_;
+      auto trial = fixed;
       trial[0] = 0.0;
       trial[3] = q4;
       const auto base_normal = microphone_normal(trial);
       const double raw_q1 = desired_yaw - std::atan2(base_normal.y(), base_normal.x());
-      // Keep the equivalent yaw nearest the measured joint position. Using
-      // the principal -pi..pi value directly creates a +/-2pi command jump
-      // when a target crosses the yaw wrap boundary.
       double q1 = current[0] + std::remainder(raw_q1 - current[0], 2.0 * M_PI);
       q1 = std::clamp(q1, -3.0543, 3.0543);
       const Eigen::Vector3d normal = rz(q1) * base_normal;
@@ -846,14 +663,14 @@ private:
       const double d1 = q1 - current[0];
       const double d4 = q4 - current[3];
       const double cost = error * error + motion_penalty_ * (d1 * d1 + d4 * d4);
-      auto candidate = fixed_;
+      auto candidate = fixed;
       candidate[0] = q1;
       candidate[3] = q4;
       return std::make_pair(cost, candidate);
     };
 
     double best_q4 = current[3];
-    for (const auto & sample : wrist_lookup_) {
+    for (const auto & sample : lookup) {
       const auto [cost, candidate] = evaluate(sample.q4);
       if (cost < best_cost) {
         best_cost = cost;
@@ -862,8 +679,6 @@ private:
       }
     }
 
-    // Refine the 0.02-rad lookup result. Without this step q4 targets jump in
-    // 1.15-degree increments even when the incoming bearing changes smoothly.
     double low = std::max(-M_PI_2, best_q4 - 0.025);
     double high = std::min(M_PI_2, best_q4 + 0.025);
     for (int iteration = 0; iteration < 16; ++iteration) {
@@ -882,90 +697,85 @@ private:
     return best;
   }
 
-  // Jerk-limited stop: let Ruckig itself compute the minimum-time deceleration
-  // to zero velocity, rather than precomputing a stop distance from
-  // acceleration alone (v^2/2a), which understates the real stopping
-  // distance whenever the jerk limit is the binding constraint and causes
-  // the arm to overshoot and swing back. Safe to call every tick; idempotent.
-  void begin_velocity_stop()
-  {
-    servo_input_.control_interface = ruckig::ControlInterface::Velocity;
-    servo_input_.target_velocity.fill(0.0);
-    servo_input_.target_acceleration.fill(0.0);
+  void begin_velocity_stop(ruckig::InputParameter<6> & input) {
+    input.control_interface = ruckig::ControlInterface::Velocity;
+    input.target_velocity.fill(0.0);
+    input.target_acceleration.fill(0.0);
   }
 
-  bool finish_tracking_controller_switch()
-  {
+  bool finish_tracking_controller_switch() {
     std::string error;
-    if (!switch_controllers(
-        {"arm_controller"}, {"arm_tracking_controller"}, error)) {
+    const std::string traj_ctrl = dual_arm_ ? "dual_arm_controller" : "arm_controller";
+    const std::string tracking_ctrl = dual_arm_ ? "dual_arm_tracking_controller" : "arm_tracking_controller";
+
+    if (!switch_controllers({traj_ctrl}, {tracking_ctrl}, error)) {
       RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,
-        "Could not restore arm_controller after stopping: %s", error.c_str());
+        "Could not restore trajectory controller after stopping: %s", error.c_str());
       return false;
     }
     std::lock_guard<std::mutex> lock(mutex_);
     control_state_ = ControlState::Trajectory;
-    RCLCPP_WARN(get_logger(),
-      "Tracking disabled cleanly; arm_controller is active for MoveIt and home");
+    arm1_locked_ = false;
+    RCLCPP_INFO(get_logger(), "Tracking disabled cleanly; %s is active", traj_ctrl.c_str());
     return true;
   }
 
   void update() {
     Eigen::Vector3d desired;
-    std::array<double, 6> actual;
+    std::array<double, 6> actual {};
+    std::array<double, 6> actual_right {};
     bool target_available = false;
     ControlState control_state = ControlState::Trajectory;
     bool external_veto = false;
     bool have_direction = false;
     double target_age = std::numeric_limits<double>::infinity();
+
     {
-      std::lock_guard<std::mutex> lock(mutex_); const auto stamp = now();
-      if (!have_joints_) {return;}
-      // Conversion 3: freshness replaces /audio/target_valid. The EKF stops
-      // publishing when it has nothing to report, so an old message is the
-      // only signal that the target is gone.
+      std::lock_guard<std::mutex> lock(mutex_);
+      const auto stamp = now();
+      if (!have_joints_) return;
       external_veto = external_veto_;
       control_state = control_state_;
       have_direction = have_direction_;
-      if (have_direction_) {
-        target_age = (stamp - last_target_).seconds();
-      }
+      if (have_direction_) target_age = (stamp - last_target_).seconds();
       target_available = control_state == ControlState::Tracking &&
         !external_veto && have_direction &&
         target_age <= target_timeout_;
       desired = filtered_direction_;
       actual = current_;
+      if (dual_arm_) actual_right = current_right_;
     }
-    if (control_state == ControlState::Trajectory) {return;}
+    if (control_state == ControlState::Trajectory) return;
 
-    const double q1_tracking_error = std::abs(std::remainder(
-      actual[0] - servo_input_.current_position[0], 2.0 * M_PI));
-    const double q4_tracking_error = std::abs(
-      actual[3] - servo_input_.current_position[3]);
-    if (control_state == ControlState::Tracking &&
-        std::max(q1_tracking_error, q4_tracking_error) > max_tracking_error_) {
-      RCLCPP_ERROR(get_logger(),
-        "Measured arm fell behind servo by %.3f rad; stopping tracking safely",
-        std::max(q1_tracking_error, q4_tracking_error));
-      {
-        std::lock_guard<std::mutex> lock(mutex_);
-        control_state_ = ControlState::Stopping;
-      }
+    // Safety check on tracking lag
+    const double q1_err = std::abs(std::remainder(actual[0] - servo_input_.current_position[0], 2.0 * M_PI));
+    const double q4_err = std::abs(actual[3] - servo_input_.current_position[3]);
+    if (control_state == ControlState::Tracking && std::max(q1_err, q4_err) > max_tracking_error_) {
+      RCLCPP_ERROR(get_logger(), "Arm 1 fell behind servo by %.3f rad; stopping tracking safely",
+        std::max(q1_err, q4_err));
+      std::lock_guard<std::mutex> lock(mutex_);
+      control_state_ = ControlState::Stopping;
       control_state = ControlState::Stopping;
     }
 
-    const double pointing_error = have_direction ?
-      angle(microphone_normal(actual), desired) : 0.0;
+    if (dual_arm_ && control_state == ControlState::Tracking) {
+      const double q1_err_r = std::abs(std::remainder(actual_right[0] - servo_input_right_.current_position[0], 2.0 * M_PI));
+      const double q4_err_r = std::abs(actual_right[3] - servo_input_right_.current_position[3]);
+      if (std::max(q1_err_r, q4_err_r) > max_tracking_error_) {
+        RCLCPP_ERROR(get_logger(), "Arm 2 fell behind servo by %.3f rad; stopping tracking safely",
+          std::max(q1_err_r, q4_err_r));
+        std::lock_guard<std::mutex> lock(mutex_);
+        control_state_ = ControlState::Stopping;
+        control_state = ControlState::Stopping;
+      }
+    }
 
-    // Continuous position-and-velocity tracking: Ruckig always holds a
-    // target and settles on it on its own, so there is no separate
-    // chase/hold state to chatter between. The commanded aim point only
-    // moves when the solved target actually changes by more than the
-    // deadband, which keeps measurement noise from causing constant
-    // micro-retargeting.
-    const bool should_track = control_state == ControlState::Tracking && target_available;
+    const double pointing_error = have_direction ? angle(microphone_normal(actual), desired) : 0.0;
+    const bool should_track = (control_state == ControlState::Tracking) && target_available;
+
     if (should_track) {
-      const auto candidate = solve(servo_input_.current_position, desired);
+      // 1. Solve Arm 1 target
+      const auto candidate = solve(servo_input_.current_position, desired, fixed_, wrist_lookup_);
       const double update_error = angle(
         microphone_normal(candidate), microphone_normal(servo_input_.target_position));
       if (update_error >= angular_deadband_) {
@@ -977,22 +787,59 @@ private:
       servo_input_.control_interface = ruckig::ControlInterface::Position;
       servo_input_.target_velocity.fill(0.0);
       servo_input_.target_acceleration.fill(0.0);
-    } else {
-      // Stale target, external veto, a formal Stopping transition, or
-      // tracking not armed: decelerate smoothly to zero velocity and hold
-      // wherever that ends up, ready to resume the instant should_track
-      // becomes true again.
-      begin_velocity_stop();
-    }
-    const auto target = servo_input_.target_position;
 
-    const double solution_error = have_direction ?
-      angle(microphone_normal(target), desired) : 0.0;
+      // 2. Dual-arm coordination
+      if (dual_arm_) {
+        bool arm2_should_track = false;
+        if (dual_tracking_policy_ == "simultaneous") {
+          arm2_should_track = true;
+        } else { // "first_arm_lead"
+          if (pointing_error <= lead_lock_tolerance_rad_) {
+            arm1_locked_ = true;
+          }
+          arm2_should_track = arm1_locked_;
+        }
+
+        if (arm2_should_track) {
+          // Binocular convergence vector for Arm 2:
+          // Target 3D point in world = target_nominal_distance * desired
+          // Arm 2 base = (second_arm_x, second_arm_y, second_arm_z)
+          Eigen::Vector3d desired_arm2;
+          if (target_nominal_distance_ > 0.0) {
+            const Eigen::Vector3d p_target = target_nominal_distance_ * desired;
+            const Eigen::Vector3d p_arm2(second_arm_x_, second_arm_y_, second_arm_z_);
+            desired_arm2 = (p_target - p_arm2).normalized();
+          } else {
+            desired_arm2 = desired; // Pure parallel gaze
+          }
+
+          const auto candidate_right = solve(
+            servo_input_right_.current_position, desired_arm2, fixed_right_, wrist_lookup_right_);
+          const double update_error_right = angle(
+            microphone_normal(candidate_right), microphone_normal(servo_input_right_.target_position));
+          if (update_error_right >= angular_deadband_) {
+            servo_input_right_.target_position = candidate_right;
+          }
+          servo_input_right_.control_interface = ruckig::ControlInterface::Position;
+          servo_input_right_.target_velocity.fill(0.0);
+          servo_input_right_.target_acceleration.fill(0.0);
+        } else {
+          begin_velocity_stop(servo_input_right_);
+        }
+      }
+    } else {
+      begin_velocity_stop(servo_input_);
+      if (dual_arm_) {
+        begin_velocity_stop(servo_input_right_);
+        arm1_locked_ = false;
+      }
+    }
+
+    // Update Ruckig for Arm 1
     const auto result = otg_->update(servo_input_, servo_output_);
     if (result < ruckig::Result::Working) {
       RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,
-        "Ruckig rejected the servo state (error %d); holding last command",
-        static_cast<int>(result));
+        "Ruckig rejected Arm 1 servo state (%d); holding last command", static_cast<int>(result));
       return;
     }
     servo_command_ = servo_output_.new_position;
@@ -1000,32 +847,69 @@ private:
     servo_command_[2] = fixed_[2];
     servo_command_[4] = fixed_[4];
     servo_command_[5] = fixed_[5];
-    publish_servo_command(servo_command_);
     servo_output_.pass_to_input(servo_input_);
-    const auto jerk = compute_jerk(servo_output_.new_acceleration);
-    write_servo_log(control_state, target_available, target, actual,
-      servo_output_.new_acceleration, jerk, pointing_error, solution_error, result);
 
-    if (control_state == ControlState::Stopping && result == ruckig::Result::Finished) {
-      finish_tracking_controller_switch();
-      return;
+    // Update Ruckig for Arm 2 (if dual arm)
+    ruckig::Result result_right = ruckig::Result::Finished;
+    if (dual_arm_) {
+      result_right = otg_right_->update(servo_input_right_, servo_output_right_);
+      if (result_right < ruckig::Result::Working) {
+        RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,
+          "Ruckig rejected Arm 2 servo state (%d); holding last command", static_cast<int>(result_right));
+        return;
+      }
+      servo_command_right_ = servo_output_right_.new_position;
+      servo_command_right_[1] = fixed_right_[1];
+      servo_command_right_[2] = fixed_right_[2];
+      servo_command_right_[4] = fixed_right_[4];
+      servo_command_right_[5] = fixed_right_[5];
+      servo_output_right_.pass_to_input(servo_input_right_);
     }
-    const char * state = should_track ? "tracking" :
-      (control_state == ControlState::Stopping ? "stopping" :
-       (external_veto ? "hold/veto" :
-        (!have_direction ? "hold/no-target" : "hold/stale")));
+
+    // Publish servo command
+    if (!dual_arm_) {
+      publish_servo_command({servo_command_.begin(), servo_command_.end()});
+    } else {
+      std::vector<double> dual_cmd;
+      dual_cmd.insert(dual_cmd.end(), servo_command_.begin(), servo_command_.end());
+      dual_cmd.insert(dual_cmd.end(), servo_command_right_.begin(), servo_command_right_.end());
+      publish_servo_command(dual_cmd);
+    }
+
+    write_servo_log(control_state, target_available, servo_input_.target_position, actual, pointing_error);
+
+    if (control_state == ControlState::Stopping) {
+      bool all_finished = (result == ruckig::Result::Finished);
+      if (dual_arm_) all_finished = all_finished && (result_right == ruckig::Result::Finished);
+      if (all_finished) {
+        finish_tracking_controller_switch();
+        return;
+      }
+    }
+
     RCLCPP_DEBUG_THROTTLE(get_logger(), *get_clock(), 1000,
-      "servo q1=%.3f q4=%.3f state=%s age=%.2fs "
-      "error=%.1fdeg solution_error=%.1fdeg target_q1=%.3f target_q4=%.3f "
-      "desired_world=(%.2f,%.2f,%.2f); q2/q3/q5/q6 fixed",
-      servo_command_[0], servo_command_[3], state, target_age,
-      pointing_error * 180.0 / M_PI, solution_error * 180.0 / M_PI,
-      target[0], target[3], desired.x(), desired.y(), desired.z());
+      "servo status: state=%s age=%.2fs arm1_err=%.1fdeg locked=%d",
+      should_track ? "tracking" : "holding",
+      target_age,
+      pointing_error * 180.0 / M_PI,
+      arm1_locked_ ? 1 : 0);
   }
 
-  const std::array<std::string, 6> names_{
+  // Configuration and state
+  bool dual_arm_{false};
+  double second_arm_x_{-0.75}, second_arm_y_{0.0}, second_arm_z_{0.0};
+  double target_nominal_distance_{0.0};
+  std::string dual_tracking_policy_{"first_arm_lead"};
+  double lead_lock_tolerance_rad_{0.10};
+  bool arm1_locked_{false};
+
+  const std::vector<std::string> names_single_{
     "joint1", "joint2", "joint3", "joint4", "joint5", "joint6"};
-  const std::array<std::size_t, 2> active_joints_{0, 3};
+  const std::vector<std::string> names_left_{
+    "left_joint1", "left_joint2", "left_joint3", "left_joint4", "left_joint5", "left_joint6"};
+  const std::vector<std::string> names_right_{
+    "right_joint1", "right_joint2", "right_joint3", "right_joint4", "right_joint5", "right_joint6"};
+
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr command_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr servo_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr events_pub_;
@@ -1043,7 +927,10 @@ private:
   rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedPtr switch_client_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
-  rclcpp::TimerBase::SharedPtr timer_; mutable std::mutex mutex_;
+  rclcpp::TimerBase::SharedPtr timer_;
+  mutable std::mutex mutex_;
+
+  // Arm 1 (or single arm) Ruckig & state
   std::array<double, 6> current_ {}, fixed_ {}, servo_command_ {};
   ruckig::InputParameter<6> servo_input_;
   ruckig::OutputParameter<6> servo_output_;
@@ -1051,21 +938,25 @@ private:
   bool have_previous_output_acceleration_{false};
   std::unique_ptr<ruckig::Ruckig<6>> otg_;
   std::vector<WristSample> wrist_lookup_;
+
+  // Arm 2 (Right Arm in dual-arm mode) Ruckig & state
+  std::array<double, 6> current_right_ {}, fixed_right_ {}, servo_command_right_ {};
+  ruckig::InputParameter<6> servo_input_right_;
+  ruckig::OutputParameter<6> servo_output_right_;
+  std::array<double, 6> previous_output_acceleration_right_ {};
+  bool have_previous_output_acceleration_right_{false};
+  std::unique_ptr<ruckig::Ruckig<6>> otg_right_;
+  std::vector<WristSample> wrist_lookup_right_;
+
   Eigen::Vector3d filtered_direction_{Eigen::Vector3d::UnitX()};
-  Eigen::Vector3d previous_ekf_input_direction_{Eigen::Vector3d::UnitX()};
-  Eigen::Vector3d previous_ekf_world_direction_{Eigen::Vector3d::UnitX()};
   Eigen::Vector3d previous_yolo_direction_{Eigen::Vector3d::UnitX()};
   rclcpp::Time last_target_{0, 0, RCL_ROS_TIME};
   bool have_joints_{false}, external_veto_{false}, have_direction_{false};
-  bool have_previous_ekf_world_direction_{false};
   bool have_previous_yolo_direction_{false};
   ControlState control_state_{ControlState::Trajectory};
   bool home_requested_{false}, home_reached_{false};
   bool ekf_enabled_{true};
-  Verdict ast_verdict_{false, 0.0, rclcpp::Time(0, 0, RCL_ROS_TIME)};
-  Verdict gre_verdict_{false, 0.0, rclcpp::Time(0, 0, RCL_ROS_TIME)};
-  Verdict mobilenetv2_verdict_{false, 0.0, rclcpp::Time(0, 0, RCL_ROS_TIME)};
-  bool have_ast_verdict_{false}, have_gre_verdict_{false}, have_mobilenetv2_verdict_{false};
+
   double target_timeout_, smoothing_alpha_, angular_deadband_;
   double motion_penalty_;
   double command_rate_hz_, max_velocity_, max_acceleration_;
@@ -1081,6 +972,7 @@ private:
   std::ofstream ekf_direction_log_;
   std::ofstream yolo_direction_log_;
   std::ofstream servo_log_;
+
   const std::array<double, 6> home_{
     M_PI / 2.0, -M_PI / 2.0, -M_PI / 2.0, 0.0, M_PI / 2.0, 0.0};
 };

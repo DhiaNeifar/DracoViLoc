@@ -4,4 +4,16 @@ initial_positions:
   joint3: -1.5707963267948966
   joint4: 0.0
   joint5: 1.5707963267948966
-  joint6: -3.141592653589793
+  joint6: 0.0
+  left_joint1: 1.5707963267948966
+  left_joint2: -1.5707963267948966
+  left_joint3: -1.5707963267948966
+  left_joint4: 0.0
+  left_joint5: 1.5707963267948966
+  left_joint6: 0.0
+  right_joint1: 1.5707963267948966
+  right_joint2: -1.5707963267948966
+  right_joint3: -1.5707963267948966
+  right_joint4: 0.0
+  right_joint5: 1.5707963267948966
+  right_joint6: 0.0

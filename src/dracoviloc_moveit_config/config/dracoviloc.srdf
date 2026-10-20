@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <robot name="dracoviloc">
   <virtual_joint name="world_joint" type="fixed" parent_frame="world" child_link="base_link"/>
+  
+  <!-- Single Arm Group (fallback) -->
   <group name="arm">
     <chain base_link="base_link" tip_link="d435i_link"/>
   </group>
@@ -12,6 +14,54 @@
     <joint name="joint5" value="1.5707963267948966"/>
     <joint name="joint6" value="0.0"/>
   </group_state>
+
+  <!-- Left Arm Group (Arm 1 - Main) -->
+  <group name="left_arm">
+    <chain base_link="left_base_link" tip_link="d435i_link"/>
+  </group>
+  <group_state name="home" group="left_arm">
+    <joint name="left_joint1" value="1.5707963267948966"/>
+    <joint name="left_joint2" value="-1.5707963267948966"/>
+    <joint name="left_joint3" value="-1.5707963267948966"/>
+    <joint name="left_joint4" value="0.0"/>
+    <joint name="left_joint5" value="1.5707963267948966"/>
+    <joint name="left_joint6" value="0.0"/>
+  </group_state>
+
+  <!-- Right Arm Group (Arm 2 - Follower) -->
+  <group name="right_arm">
+    <chain base_link="right_base_link" tip_link="right_tool_link"/>
+  </group>
+  <group_state name="home" group="right_arm">
+    <joint name="right_joint1" value="1.5707963267948966"/>
+    <joint name="right_joint2" value="-1.5707963267948966"/>
+    <joint name="right_joint3" value="-1.5707963267948966"/>
+    <joint name="right_joint4" value="0.0"/>
+    <joint name="right_joint5" value="1.5707963267948966"/>
+    <joint name="right_joint6" value="0.0"/>
+  </group_state>
+
+  <!-- Dual Arms Group -->
+  <group name="dual_arms">
+    <group name="left_arm"/>
+    <group name="right_arm"/>
+  </group>
+  <group_state name="home" group="dual_arms">
+    <joint name="left_joint1" value="1.5707963267948966"/>
+    <joint name="left_joint2" value="-1.5707963267948966"/>
+    <joint name="left_joint3" value="-1.5707963267948966"/>
+    <joint name="left_joint4" value="0.0"/>
+    <joint name="left_joint5" value="1.5707963267948966"/>
+    <joint name="left_joint6" value="0.0"/>
+    <joint name="right_joint1" value="1.5707963267948966"/>
+    <joint name="right_joint2" value="-1.5707963267948966"/>
+    <joint name="right_joint3" value="-1.5707963267948966"/>
+    <joint name="right_joint4" value="0.0"/>
+    <joint name="right_joint5" value="1.5707963267948966"/>
+    <joint name="right_joint6" value="0.0"/>
+  </group_state>
+
+  <!-- Single Arm Collisions -->
   <disable_collisions link1="base_link" link2="shoulder_link" reason="Adjacent"/>
   <disable_collisions link1="base_link" link2="upperarm_link" reason="Never"/>
   <disable_collisions link1="shoulder_link" link2="upperarm_link" reason="Adjacent"/>
@@ -22,8 +72,6 @@
   <disable_collisions link1="wrist1_link" link2="wrist3_link" reason="Never"/>
   <disable_collisions link1="wrist2_link" link2="wrist3_link" reason="Adjacent"/>
   <disable_collisions link1="wrist3_link" link2="d435i_link" reason="Mounted"/>
-  <!-- The UMA16 collision box is only a visualization proxy. Ignore it while
-       evaluating audio-pointing plans; normal arm self-collisions stay active. -->
   <disable_collisions link1="odas_link" link2="base_link" reason="Audio sensor proxy"/>
   <disable_collisions link1="odas_link" link2="shoulder_link" reason="Audio sensor proxy"/>
   <disable_collisions link1="odas_link" link2="upperarm_link" reason="Audio sensor proxy"/>
@@ -32,4 +80,38 @@
   <disable_collisions link1="odas_link" link2="wrist2_link" reason="Audio sensor proxy"/>
   <disable_collisions link1="odas_link" link2="wrist3_link" reason="Mounted"/>
   <disable_collisions link1="odas_link" link2="d435i_link" reason="Mounted sensors"/>
+
+  <!-- Left Arm Collisions -->
+  <disable_collisions link1="left_base_link" link2="left_shoulder_link" reason="Adjacent"/>
+  <disable_collisions link1="left_base_link" link2="left_upperarm_link" reason="Never"/>
+  <disable_collisions link1="left_shoulder_link" link2="left_upperarm_link" reason="Adjacent"/>
+  <disable_collisions link1="left_shoulder_link" link2="left_wrist1_link" reason="Never"/>
+  <disable_collisions link1="left_upperarm_link" link2="left_forearm_link" reason="Adjacent"/>
+  <disable_collisions link1="left_forearm_link" link2="left_wrist1_link" reason="Adjacent"/>
+  <disable_collisions link1="left_wrist1_link" link2="left_wrist2_link" reason="Adjacent"/>
+  <disable_collisions link1="left_wrist1_link" link2="left_wrist3_link" reason="Never"/>
+  <disable_collisions link1="left_wrist2_link" link2="left_wrist3_link" reason="Adjacent"/>
+  <disable_collisions link1="left_wrist3_link" link2="d435i_link" reason="Mounted"/>
+  <disable_collisions link1="odas_link" link2="left_base_link" reason="Audio sensor proxy"/>
+  <disable_collisions link1="odas_link" link2="left_shoulder_link" reason="Audio sensor proxy"/>
+  <disable_collisions link1="odas_link" link2="left_upperarm_link" reason="Audio sensor proxy"/>
+  <disable_collisions link1="odas_link" link2="left_forearm_link" reason="Audio sensor proxy"/>
+  <disable_collisions link1="odas_link" link2="left_wrist1_link" reason="Audio sensor proxy"/>
+  <disable_collisions link1="odas_link" link2="left_wrist2_link" reason="Audio sensor proxy"/>
+  <disable_collisions link1="odas_link" link2="left_wrist3_link" reason="Mounted"/>
+
+  <!-- Right Arm Collisions -->
+  <disable_collisions link1="right_base_link" link2="right_shoulder_link" reason="Adjacent"/>
+  <disable_collisions link1="right_base_link" link2="right_upperarm_link" reason="Never"/>
+  <disable_collisions link1="right_shoulder_link" link2="right_upperarm_link" reason="Adjacent"/>
+  <disable_collisions link1="right_shoulder_link" link2="right_wrist1_link" reason="Never"/>
+  <disable_collisions link1="right_upperarm_link" link2="right_forearm_link" reason="Adjacent"/>
+  <disable_collisions link1="right_forearm_link" link2="right_wrist1_link" reason="Adjacent"/>
+  <disable_collisions link1="right_wrist1_link" link2="right_wrist2_link" reason="Adjacent"/>
+  <disable_collisions link1="right_wrist1_link" link2="right_wrist3_link" reason="Never"/>
+  <disable_collisions link1="right_wrist2_link" link2="right_wrist3_link" reason="Adjacent"/>
+  <disable_collisions link1="right_wrist3_link" link2="right_tool_link" reason="Mounted"/>
+
+  <!-- Inter-arm Base Collisions -->
+  <disable_collisions link1="left_base_link" link2="right_base_link" reason="Adjacent"/>
 </robot>
