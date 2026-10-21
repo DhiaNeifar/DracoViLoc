@@ -10,6 +10,17 @@ install(PROGRAMS
 )
 
 install(PROGRAMS
+  scripts/first_arrival_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME first_arrival_node
+)
+
+install(FILES
+  scripts/first_arrival.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(PROGRAMS
   scripts/audio_target_tracker.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME audio_target_tracker
@@ -28,5 +39,10 @@ install(PROGRAMS
 )
 
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_first_arrival test/test_first_arrival.py)
+endif()
 
 ament_package()

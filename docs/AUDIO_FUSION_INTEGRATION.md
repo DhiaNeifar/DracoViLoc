@@ -161,7 +161,7 @@ reporting healthy.
 unit direction, never a range. This is sufficient for slew-to-cue — a target
 at 5 m and one at 50 m on the same bearing need the same arm pose.
 
-### Bearing gate on the classifier outputs
+### Bearing continuity gates
 
 Each audio classifier (`ast_classifier_node`, `gre_classifier_node`,
 `mobilenetv2_classifier_node`) gates its published direction stream
@@ -175,6 +175,37 @@ last published one is held back unless a consistent challenger (same 15 deg
 cone) persists for `bearing_confirm` (3) consecutive windows, in which case
 the gate retargets; after `bearing_timeout` (2 s) of silence it re-arms.
 `bearing_gate:=false` disables it per classifier.
+
+When `tracking_mode:=ekf`, bringup disables those classifier-local gates and
+enables the adaptive gate in `dracoviloc_ekf` instead. The EKF gate compares
+each acoustic direction with the predicted direction, combines a bounded
+elapsed-time motion allowance with the covariance-aware NIS, and defers a
+large inconsistent jump. The 70-degree absolute cap is enforced even when
+prediction uncertainty makes NIS permissive. Five distinct, spatially
+consistent observations spanning at least 2.0 seconds can confirm a real relocation; a gap longer
+than 10 seconds expires old challenger evidence but does not automatically
+trust the next bearing. A recent visual update stops
+audio alone from forcibly resetting the fused state. All thresholds are
+exposed as `bearing_gate_*` launch arguments on `arm_demo.launch.py`.
+
+The gate cannot prove that a path is direct. A persistent reflection can be
+accepted during recovery, while a genuine abrupt maneuver can be delayed.
+Use labeled field recordings to tune the defaults for the installation.
+
+### First-arrival direct-path validation
+
+For stronger reflection resistance, set `first_arrival_mode:=shadow` and then
+`enforce` after calibration. Shadow/enforce modes expose the synchronized
+UMA-16 `/raw` stream to a passive onset estimator while ODAS consumes those
+same frames. Confident earliest-arrival fits appear on
+`/first_arrival/candidates` and as a green RViz arrow. They authorize
+classified acoustic bearings but never replace ODAS or MobileNetV2.
+
+In enforce mode, acoustic initialization and movement outside the last
+validated anchor are rejected without matching direct-path evidence. Lack of
+evidence therefore holds the EKF instead of falling back to the strongest
+ODAS peak. Use `first_arrival_raw_recording_path` to capture temporary
+16-channel calibration data; leave it empty during normal operation.
 
 ---
 

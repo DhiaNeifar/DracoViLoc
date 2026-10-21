@@ -30,6 +30,15 @@ def _configure_pipeline(context):
     mobilenetv2_ekf_enabled = _enabled(context, "mobilenetv2_ekf_enabled")
     recording_enabled = _enabled(context, "recording_enabled")
     sss_channels_recording = _enabled(context, "sss_channels_recording")
+    first_arrival_mode = LaunchConfiguration("first_arrival_mode").perform(context)
+
+    if first_arrival_mode not in ("off", "shadow", "enforce"):
+        raise RuntimeError("first_arrival_mode must be off, shadow, or enforce")
+    if first_arrival_mode != "off" and not audio_enabled:
+        raise RuntimeError("first_arrival_mode requires audio_enabled:=true")
+    if first_arrival_mode == "enforce" and not (fusion_enabled and mode == "ekf"):
+        raise RuntimeError(
+            "first_arrival_mode=enforce requires fusion_enabled:=true and tracking_mode:=ekf")
 
     if mobilenetv2_enabled and not audio_enabled:
         raise RuntimeError("mobilenetv2_enabled requires audio_enabled:=true")
@@ -79,6 +88,25 @@ def _configure_pipeline(context):
                 "microphone_frame": "table_mic_link",
                 "diagnostics_log_path": LaunchConfiguration("odas_diagnostics_log_path"),
                 "diagnostics_interval_s": LaunchConfiguration("odas_diagnostics_interval_s"),
+                "first_arrival_mode": LaunchConfiguration("first_arrival_mode"),
+                "first_arrival_min_confidence": LaunchConfiguration(
+                    "first_arrival_min_confidence"),
+                "first_arrival_onset_snr_db": LaunchConfiguration(
+                    "first_arrival_onset_snr_db"),
+                "first_arrival_noise_window_s": LaunchConfiguration(
+                    "first_arrival_noise_window_s"),
+                "first_arrival_max_span_ms": LaunchConfiguration(
+                    "first_arrival_max_span_ms"),
+                "first_arrival_residual_us": LaunchConfiguration(
+                    "first_arrival_residual_us"),
+                "first_arrival_min_inliers": LaunchConfiguration(
+                    "first_arrival_min_inliers"),
+                "first_arrival_refractory_ms": LaunchConfiguration(
+                    "first_arrival_refractory_ms"),
+                "first_arrival_diagnostics_path": LaunchConfiguration(
+                    "first_arrival_diagnostics_path"),
+                "first_arrival_raw_recording_path": LaunchConfiguration(
+                    "first_arrival_raw_recording_path"),
             }.items()))
     if recording_enabled:
         actions.append(Node(
@@ -139,6 +167,8 @@ def _configure_pipeline(context):
                 "threshold": LaunchConfiguration("ast_threshold"),
                 "min_activity": LaunchConfiguration("min_activity"),
                 "always_classify": LaunchConfiguration("always_classify"),
+                "bearing_gate": "false" if mode == "ekf" else
+                    LaunchConfiguration("bearing_gate_enabled"),
             }.items())]))
     if gre_enabled and audio_enabled:
         actions.append(GroupAction(scoped=True, actions=[IncludeLaunchDescription(
@@ -151,6 +181,8 @@ def _configure_pipeline(context):
                 "meta_path": PathJoinSubstitution(
                     [EnvironmentVariable("HOME"), "DracoViLoc", "models", "gre", "model_logmel_meta.json"]),
                 "min_activity": LaunchConfiguration("min_activity"),
+                "bearing_gate": "false" if mode == "ekf" else
+                    LaunchConfiguration("bearing_gate_enabled"),
             }.items())]))
     if mobilenetv2_enabled:
         mobile_arguments = {
@@ -159,6 +191,8 @@ def _configure_pipeline(context):
             "threshold": LaunchConfiguration("mobilenetv2_threshold"),
             "votes_required": LaunchConfiguration("mobilenetv2_votes_required"),
             "vote_window": LaunchConfiguration("mobilenetv2_vote_window"),
+            "bearing_gate": "false" if mode == "ekf" else
+                LaunchConfiguration("bearing_gate_enabled"),
         }
         for name in ("engine_path", "venv_python"):
             value = LaunchConfiguration("mobilenetv2_" + name).perform(context)
@@ -184,7 +218,33 @@ def _configure_pipeline(context):
                                   "ekf_mobilenetv2_measurement_noise"),
                               "innovation_gate": LaunchConfiguration("ekf_innovation_gate"),
                               "output_average_window": LaunchConfiguration(
-                                  "ekf_average_window")}.items()))
+                                  "ekf_average_window"),
+                              "bearing_gate_enabled": LaunchConfiguration(
+                                  "bearing_gate_enabled"),
+                              "bearing_gate_base_angle_deg": LaunchConfiguration(
+                                  "bearing_gate_base_angle_deg"),
+                              "bearing_gate_max_angle_deg": LaunchConfiguration(
+                                  "bearing_gate_max_angle_deg"),
+                              "bearing_gate_max_rate_deg_s": LaunchConfiguration(
+                                  "bearing_gate_max_rate_deg_s"),
+                              "bearing_gate_confirmations": LaunchConfiguration(
+                                  "bearing_gate_confirmations"),
+                              "bearing_gate_confirmation_time_s": LaunchConfiguration(
+                                  "bearing_gate_confirmation_time_s"),
+                              "bearing_gate_challenger_tolerance_deg": LaunchConfiguration(
+                                  "bearing_gate_challenger_tolerance_deg"),
+                              "bearing_gate_reacquire_timeout_s": LaunchConfiguration(
+                                  "bearing_gate_reacquire_timeout_s"),
+                              "first_arrival_mode": LaunchConfiguration(
+                                  "first_arrival_mode"),
+                              "first_arrival_min_confidence": LaunchConfiguration(
+                                  "first_arrival_min_confidence"),
+                              "first_arrival_match_angle_deg": LaunchConfiguration(
+                                  "first_arrival_match_angle_deg"),
+                              "first_arrival_anchor_deviation_deg": LaunchConfiguration(
+                                  "first_arrival_anchor_deviation_deg"),
+                              "first_arrival_evidence_ttl_s": LaunchConfiguration(
+                                  "first_arrival_evidence_ttl_s")}.items()))
 
     if mobilenetv2_enabled or gre_enabled or fusion_enabled:
         actions.append(Node(
@@ -194,6 +254,8 @@ def _configure_pipeline(context):
                 "mobilenetv2_enabled": mobilenetv2_enabled,
                 "gre_enabled": gre_enabled,
                 "ekf_enabled": fusion_enabled,
+                "first_arrival_enabled":
+                    first_arrival_mode != "off",
                 "arrow_length": ParameterValue(
                     LaunchConfiguration("direction_marker_length"), value_type=float),
                 "marker_timeout": ParameterValue(
@@ -287,11 +349,11 @@ def generate_launch_description():
             "second_arm_y": LaunchConfiguration("second_arm_y"),
             "second_arm_z": LaunchConfiguration("second_arm_z"),
             "use_rviz": use_rviz,
-            "use_moveit": "true",
+            "use_moveit": LaunchConfiguration("use_moveit"),
         }.items())
 
     return LaunchDescription([
-        DeclareLaunchArgument("dual_arm", default_value="true",
+        DeclareLaunchArgument("dual_arm", default_value="false",
                               description="Configure and launch dual cobot arms."),
         DeclareLaunchArgument("left_robot_ip", default_value="192.168.58.2",
                               description="IP address for Arm 1 (left)."),
@@ -311,6 +373,9 @@ def generate_launch_description():
         DeclareLaunchArgument("lead_lock_tolerance_rad", default_value="0.10",
                               description="Arm 1 alignment tolerance before Arm 2 tracks in first_arm_lead policy."),
         DeclareLaunchArgument("use_rviz", default_value="true"),
+        DeclareLaunchArgument(
+            "use_moveit", default_value="false",
+            description="Launch MoveGroup planning services. Tracking and RViz do not require it."),
         DeclareLaunchArgument("hardware_mode", default_value="mock",
                               choices=["mock", "real"],
                               description="Use mock joints or the physical FAIRINO arm."),
@@ -448,6 +513,36 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "ekf_average_window", default_value="5",
             description="Number of accepted EKF estimates averaged before publication."),
+        DeclareLaunchArgument(
+            "bearing_gate_enabled", default_value="true",
+            description="Enable bearing continuity filtering. In EKF mode the adaptive "
+                        "gate runs inside the EKF; direct modes use the classifier gate."),
+        DeclareLaunchArgument("bearing_gate_base_angle_deg", default_value="45.0"),
+        DeclareLaunchArgument("bearing_gate_max_angle_deg", default_value="70.0"),
+        DeclareLaunchArgument("bearing_gate_max_rate_deg_s", default_value="20.0"),
+        DeclareLaunchArgument("bearing_gate_confirmations", default_value="5"),
+        DeclareLaunchArgument("bearing_gate_confirmation_time_s", default_value="2.0"),
+        DeclareLaunchArgument(
+            "bearing_gate_challenger_tolerance_deg", default_value="15.0"),
+        DeclareLaunchArgument("bearing_gate_reacquire_timeout_s", default_value="10.0"),
+        DeclareLaunchArgument(
+            "first_arrival_mode", default_value="off",
+            description="First-arrival gating: off, shadow, or enforce."),
+        DeclareLaunchArgument("first_arrival_min_confidence", default_value="0.70"),
+        DeclareLaunchArgument("first_arrival_match_angle_deg", default_value="20.0"),
+        DeclareLaunchArgument(
+            "first_arrival_anchor_deviation_deg", default_value="25.0"),
+        DeclareLaunchArgument("first_arrival_evidence_ttl_s", default_value="2.0"),
+        DeclareLaunchArgument("first_arrival_onset_snr_db", default_value="10.0"),
+        DeclareLaunchArgument("first_arrival_noise_window_s", default_value="1.0"),
+        DeclareLaunchArgument("first_arrival_max_span_ms", default_value="1.2"),
+        DeclareLaunchArgument("first_arrival_residual_us", default_value="150.0"),
+        DeclareLaunchArgument("first_arrival_min_inliers", default_value="12"),
+        DeclareLaunchArgument("first_arrival_refractory_ms", default_value="50.0"),
+        DeclareLaunchArgument("first_arrival_diagnostics_path", default_value=""),
+        DeclareLaunchArgument(
+            "first_arrival_raw_recording_path", default_value="",
+            description="Optional 16-channel signed-32 WAV used to tune first-arrival gating."),
         DeclareLaunchArgument(
             "direction_marker_length", default_value="1.0",
             description="Length in metres of MobileNetV2, GRE, and EKF RViz arrows."),

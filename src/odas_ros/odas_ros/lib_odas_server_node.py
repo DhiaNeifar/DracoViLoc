@@ -211,6 +211,7 @@ class PairCoordinator:
         self._next_token = 1
         self._paired_enabled = True
         self._skew_violation_count = 0
+        self._future_stamp_clamp_count = 0
         self._last_skew_log = None
         self._total_sessions = 0
         self._total_pairs = 0
@@ -247,6 +248,7 @@ class PairCoordinator:
                 'total_violations': self._total_violations,
                 'total_invalidations': self._total_invalidations,
                 'skew_violations': self._skew_violation_count,
+                'future_stamp_clamps': self._future_stamp_clamp_count,
             }
 
     def register_connection(self, stream: str) -> Tuple[int, List[dict]]:
@@ -467,6 +469,14 @@ class PairCoordinator:
         self._last_paired_ordinal = ordinal
 
         stamp = self._session_epoch + (ordinal - 1) * self._hop_duration
+        # ODAS can briefly drain buffered sound-card frames faster than real
+        # time at startup.  Do not let the extrapolated sample clock move into
+        # the future: downstream consumers correctly reject future-dated
+        # audio and otherwise never accumulate a classification window.
+        stamp_now = self._stamp_clock()
+        if stamp > stamp_now:
+            stamp = stamp_now
+            self._future_stamp_clamp_count += 1
         events = []
         skew = abs(sss_recv_time - sst_recv_time)
         if skew > self._sst_timeout:
@@ -1020,7 +1030,7 @@ class OdasServerNode(rclpy.node.Node):
         # analog boost on Linux (ALSA capture is an attenuator at max 0 dB), so
         # quiet sources reach classifiers and recorders at very low level.
         # Enabled by default; set to 0.0 to publish the raw ODAS separation level.
-        sss_gain_db = self.declare_parameter('sss_gain_db', 26.0).get_parameter_value().double_value
+        sss_gain_db = self.declare_parameter('sss_gain_db', 35.0).get_parameter_value().double_value
         self._sss_gain = math.pow(10.0, sss_gain_db / 20.0)
         self.get_logger().info('/sss gain: {} dB ({:.2f}x)'.format(sss_gain_db, self._sss_gain))
         self.record_diagnostic_event(

@@ -84,3 +84,30 @@ Repeat with a final `0` after testing to restore desktop audio.
 
 The UMA16v2 estimates direction, not range. Marker length and target distance
 are visualization conventions.
+
+## Passive first-arrival validation
+
+The optional first-arrival path uses the existing UMA-16 feeder to publish the
+same full-band 16-channel frames that ODAS consumes. It detects the earliest
+coherent onset across the microphones, robustly fits a plane-wave direction,
+and publishes confident results on `/first_arrival/candidates`. It does not
+replace ODAS and never commands the arm directly.
+
+Start in observation-only mode:
+
+```bash
+ros2 launch dracoviloc_bringup arm_demo.launch.py \
+  audio_enabled:=true fusion_enabled:=true tracking_mode:=ekf \
+  first_arrival_mode:=shadow
+```
+
+After checking the green first-arrival marker and diagnostics, use
+`first_arrival_mode:=enforce`. In enforce mode, the EKF holds its existing
+prediction when a new acoustic bearing lacks direct-path evidence. Set
+`first_arrival_raw_recording_path:=/absolute/path/raw_uma16.wav` only for
+calibration; 16-channel signed-32 audio uses roughly 170 MB/minute.
+
+This is a passive onset detector, not proof of a direct path. Continuous rotor
+noise without a usable onset, a direct path below threshold, or a reflection
+inside the array's temporal resolution produces no trusted candidate. The safe
+result in enforce mode is to hold rather than follow unvalidated ODAS output.

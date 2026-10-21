@@ -2,7 +2,6 @@ import importlib.util
 from pathlib import Path
 
 import pytest
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchContext, LaunchDescription
 from launch.actions import ExecuteProcess, GroupAction, IncludeLaunchDescription
 from launch.utilities import perform_substitutions
@@ -20,12 +19,14 @@ def configure(**changes):
                   recording_enabled='false', sss_channels_recording='false',
                   mobilenetv2_enabled='false', mobilenetv2_ekf_enabled='false',
                   mobilenetv2_engine_path='', mobilenetv2_venv_python='',
+                  first_arrival_mode='off',
+                  diagnostics_enabled='false',
+                  odas_diagnostics_log_path='', odas_diagnostics_interval_s='10.0',
                   direction_marker_length='1.0', direction_marker_timeout='1.25')
     values.update(changes)
     context = LaunchContext()
     context.launch_configurations.update(values)
-    return bringup._configure_pipeline(context, '/ast', '/gre', '/ekf', '/recording',
-                                       '/mobilenetv2')
+    return bringup._configure_pipeline(context)
 
 
 def test_disabled_needs_no_runtime():
@@ -48,7 +49,8 @@ def test_ekf_choice_is_independent_of_classifier(participates):
     expanded = [child for action in actions
                 for child in (action.get_sub_entities() if isinstance(action, GroupAction) else [action])]
     includes = [a for a in expanded if isinstance(a, IncludeLaunchDescription)]
-    assert len(includes) == 2
+    # Audio bringup, MobileNetV2, and EKF are independent includes.
+    assert len(includes) == 3
     ekf_arguments = dict(includes[-1].launch_arguments)
     assert ekf_arguments['mobilenetv2_ekf_enabled'] == participates
     assert ekf_arguments['ast_enabled'] == 'false'
@@ -73,16 +75,22 @@ def test_classifier_launch_defaults_do_not_leak(override):
         mobilenetv2_enabled='true',
         mobilenetv2_ekf_enabled='false', mobilenetv2_engine_path=override,
         mobilenetv2_venv_python='', ast_threshold='0.20', mobilenetv2_threshold='0.75',
+        first_arrival_mode='off',
+        diagnostics_enabled='false',
+        odas_diagnostics_log_path='', odas_diagnostics_interval_s='10.0',
+        first_arrival_min_confidence='0.70', first_arrival_onset_snr_db='10.0',
+        first_arrival_noise_window_s='1.0', first_arrival_max_span_ms='1.2',
+        first_arrival_residual_us='150.0', first_arrival_min_inliers='12',
+        first_arrival_refractory_ms='50.0', first_arrival_diagnostics_path='',
+        first_arrival_raw_recording_path='',
         mobilenetv2_votes_required='3', mobilenetv2_vote_window='5',
-        always_classify='false', min_activity='0.10',
+        always_classify='false', min_activity='0.10', bearing_gate_enabled='true',
         table_mic_x='0.0', table_mic_y='0.0', table_mic_z='0.75',
         table_mic_yaw='3.1415926535897', table_mic_pitch='0.0',
         table_mic_roll='1.57079632679', direction_marker_length='1.0',
         direction_marker_timeout='1.25'))
     context.extend_locals({'ros_specific_arguments': {'name': '', 'ns': ''}})
-    shares = [get_package_share_directory('dracoviloc_' + name)
-              for name in ('ast', 'gre', 'ekf', 'recording', 'mobilenetv2')]
-    actions = bringup._configure_pipeline(context, *shares)
+    actions = bringup._configure_pipeline(context)
     commands = []
 
     # Execute launch configuration actions, but intercept every process before startup.
@@ -96,7 +104,9 @@ def test_classifier_launch_defaults_do_not_leak(override):
 
     for action in actions:
         visit(action)
-    assert len(commands) == 5
+    # The audio include also expands ODAS processes; only the classifier
+    # commands below are relevant to this launch-default isolation test.
+    assert len(commands) >= 5
     process_commands = [command for command in commands
                         if 'static_transform_publisher' not in command[0]]
     ast = next(command for command in process_commands

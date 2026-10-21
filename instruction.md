@@ -219,7 +219,7 @@ DISPLAY=:0 xhost -SI:localuser:root
   
   
   
-  ros2 launch dracoviloc_bringup arm_audio_demo.launch.py   hardware_mode:=real   robot_ip:=192.168.58.2   audio_enabled:=true   ast_enabled:=false   gre_enabled:=false   mobilenetv2_enabled:=true   mobilenetv2_ekf_enabled:=true   mobilenetv2_threshold:=0.75   mobilenetv2_votes_required:=3   mobilenetv2_vote_window:=5   yolo_enabled:=true   fusion_enabled:=true   tracking_mode:=ekf   ekf_process_noise:=0.1  ekf_measurement_noise:=0.2   ekf_innovation_gate:=5.99   ekf_average_window:=15   command_rate_hz:=100.0   max_velocity:=0.60   max_acceleration:=0.80   max_jerk:=1.0   use_rviz:=true
+  ros2 launch dracoviloc_bringup arm_audio_demo.launch.py   hardware_mode:=real   robot_ip:=192.168.58.3   audio_enabled:=true   ast_enabled:=false   gre_enabled:=false   mobilenetv2_enabled:=true   mobilenetv2_ekf_enabled:=true   mobilenetv2_threshold:=0.75   mobilenetv2_votes_required:=3   mobilenetv2_vote_window:=5   yolo_enabled:=true   fusion_enabled:=true   tracking_mode:=ekf   ekf_process_noise:=0.1  ekf_measurement_noise:=0.2   ekf_innovation_gate:=5.99   ekf_average_window:=15   command_rate_hz:=100.0   max_velocity:=0.60   max_acceleration:=0.80   max_jerk:=1.0   use_rviz:=true
   
   
   

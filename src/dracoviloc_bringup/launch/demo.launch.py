@@ -3,7 +3,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import Command, FindExecutable, LaunchConfiguration
+from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PythonExpression
 from launch.conditions import IfCondition, UnlessCondition
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -53,15 +53,32 @@ def generate_launch_description():
                  " second_arm_z:=", second_arm_z,
                  " ros2_controllers_file:=", controllers_file]), value_type=str)}
 
-    moveit_config = (MoveItConfigsBuilder("dracoviloc", package_name="dracoviloc_moveit_config")
-        .robot_description(file_path=xacro_file, mappings=mappings)
-        .robot_description_semantic(file_path="config/dracoviloc.srdf")
-        .robot_description_kinematics(file_path="config/kinematics.yaml")
-        .joint_limits(file_path="config/joint_limits.yaml")
-        .trajectory_execution(file_path="config/moveit_controllers.yaml")
-        .planning_pipelines(pipelines=["ompl"]).to_moveit_configs())
+    def moveit_config_for(srdf_file):
+        return (MoveItConfigsBuilder(
+            "dracoviloc", package_name="dracoviloc_moveit_config")
+            .robot_description(file_path=xacro_file, mappings=mappings)
+            .robot_description_semantic(file_path=srdf_file)
+            .robot_description_kinematics(file_path="config/kinematics.yaml")
+            .joint_limits(file_path="config/joint_limits.yaml")
+            .trajectory_execution(file_path="config/moveit_controllers.yaml")
+            .planning_pipelines(pipelines=["ompl"]).to_moveit_configs())
+
+    single_moveit_config = moveit_config_for("config/dracoviloc_single.srdf")
+    dual_moveit_config = moveit_config_for("config/dracoviloc_dual.srdf")
 
     common = {"use_sim_time": False}
+    single_moveit = IfCondition(PythonExpression([
+        "'", use_moveit, "'.lower() in ('1', 'true', 'yes', 'on') and '",
+        dual_arm, "'.lower() not in ('1', 'true', 'yes', 'on')"]))
+    dual_moveit = IfCondition(PythonExpression([
+        "'", use_moveit, "'.lower() in ('1', 'true', 'yes', 'on') and '",
+        dual_arm, "'.lower() in ('1', 'true', 'yes', 'on')"]))
+    single_rviz = IfCondition(PythonExpression([
+        "'", use_rviz, "'.lower() in ('1', 'true', 'yes', 'on') and '",
+        dual_arm, "'.lower() not in ('1', 'true', 'yes', 'on')"]))
+    dual_rviz = IfCondition(PythonExpression([
+        "'", use_rviz, "'.lower() in ('1', 'true', 'yes', 'on') and '",
+        dual_arm, "'.lower() in ('1', 'true', 'yes', 'on')"]))
 
     return LaunchDescription([
         DeclareLaunchArgument("dual_arm", default_value="false",
@@ -119,9 +136,17 @@ def generate_launch_description():
              condition=IfCondition(dual_arm)),
 
         Node(package="moveit_ros_move_group", executable="move_group", output="screen",
-             parameters=[moveit_config.to_dict(), common], condition=IfCondition(use_moveit)),
+             parameters=[single_moveit_config.to_dict(), common],
+             condition=single_moveit),
+        Node(package="moveit_ros_move_group", executable="move_group", output="screen",
+             parameters=[dual_moveit_config.to_dict(), common],
+             condition=dual_moveit),
         Node(package="rviz2", executable="rviz2",
              arguments=["-d", os.path.join(moveit_share, "config", "moveit.rviz")],
-             parameters=[moveit_config.to_dict(), common], output="screen",
-             condition=IfCondition(use_rviz)),
+             parameters=[single_moveit_config.to_dict(), common], output="screen",
+             condition=single_rviz),
+        Node(package="rviz2", executable="rviz2",
+             arguments=["-d", os.path.join(moveit_share, "config", "moveit.rviz")],
+             parameters=[dual_moveit_config.to_dict(), common], output="screen",
+             condition=dual_rviz),
     ])

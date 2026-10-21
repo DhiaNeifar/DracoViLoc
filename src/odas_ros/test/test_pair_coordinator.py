@@ -42,10 +42,16 @@ class LogRecorder:
 
 def make_coordinator(**overrides):
     recorder = LogRecorder()
+    stamp = [1234.5 - HOP_DURATION]
+
+    def advancing_stamp_clock():
+        stamp[0] += HOP_DURATION
+        return stamp[0]
+
     kwargs = {
         'slot_count': SLOT_COUNT,
         'hop_duration': HOP_DURATION,
-        'stamp_clock': lambda: 1234.5,
+        'stamp_clock': advancing_stamp_clock,
         'log_info': recorder.info,
         'log_warn': recorder.warning,
         'log_error': recorder.error,
@@ -112,6 +118,21 @@ class TestOrdinalPairing:
 
         assert len(pairs) == 1
         assert pairs[0]['stamp'] == pytest.approx(1700000000.25)
+
+    def test_buffered_startup_never_publishes_future_audio_stamp(self):
+        coordinator, _ = make_coordinator(stamp_clock=lambda: 1234.5)
+        sss_token, sst_token = start_session(coordinator)
+
+        pairs = []
+        for k in range(1, 20):
+            submit_sss(coordinator, sss_token, k, recv_time=k * HOP_DURATION)
+            pairs += completed_pairs(submit_sst(
+                coordinator, sst_token, BASELINE + k - 1,
+                recv_time=k * HOP_DURATION))
+
+        assert len(pairs) == 19
+        assert all(pair['stamp'] <= 1234.5 for pair in pairs)
+        assert coordinator.diagnostics_snapshot()['future_stamp_clamps'] == 18
 
     def test_sst_arriving_before_sss_pairs_identically(self):
         coordinator, _ = make_coordinator()

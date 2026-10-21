@@ -7,6 +7,7 @@
 
 #include "geometry_msgs/msg/point.hpp"
 #include "geometry_msgs/msg/vector3_stamped.hpp"
+#include "odas_ros_msgs/msg/odas_ssl_array_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "visualization_msgs/msg/marker.hpp"
 
@@ -34,6 +35,7 @@ public:
     add_source(
       "ekf_enabled", "/ekf/direction",
       "/ekf/target_marker", "ekf_target", 1.00, 0.70, 0.05);
+    add_first_arrival_source();
 
     timer_ = create_wall_timer(
       std::chrono::milliseconds(100), [this]() {expire_stale_markers();});
@@ -42,6 +44,7 @@ public:
 private:
   using Direction = geometry_msgs::msg::Vector3Stamped;
   using Marker = visualization_msgs::msg::Marker;
+  using FirstArrival = odas_ros_msgs::msg::OdasSslArrayStamped;
 
   struct Source
   {
@@ -55,6 +58,35 @@ private:
     rclcpp::Subscription<Direction>::SharedPtr subscription;
     rclcpp::Publisher<Marker>::SharedPtr publisher;
   };
+
+  void add_first_arrival_source()
+  {
+    if (!declare_parameter("first_arrival_enabled", false)) {
+      return;
+    }
+    auto source = std::make_shared<Source>();
+    source->marker_namespace = "first_arrival_target";
+    source->red = 0.10;
+    source->green = 1.00;
+    source->blue = 0.15;
+    source->publisher = create_publisher<Marker>(
+      "/first_arrival/target_marker", rclcpp::QoS(10).reliable());
+    first_arrival_sub_ = create_subscription<FirstArrival>(
+      "/first_arrival/candidates", rclcpp::QoS(10).reliable(),
+      [this, source](const FirstArrival::SharedPtr message) {
+        if (message->sources.empty()) {
+          return;
+        }
+        Direction direction;
+        direction.header = message->header;
+        direction.vector.x = message->sources.front().x;
+        direction.vector.y = message->sources.front().y;
+        direction.vector.z = message->sources.front().z;
+        publish_marker(*source, direction);
+      });
+    sources_.push_back(source);
+    RCLCPP_INFO(get_logger(), "Visualizing /first_arrival/candidates in green");
+  }
 
   void add_source(
     const std::string & enabled_parameter, const std::string & direction_topic,
@@ -143,6 +175,7 @@ private:
   double arrow_length_;
   double timeout_;
   std::vector<std::shared_ptr<Source>> sources_;
+  rclcpp::Subscription<FirstArrival>::SharedPtr first_arrival_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 
