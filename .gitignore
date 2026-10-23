@@ -37,6 +37,7 @@ fairino-cpp-sdk/windows/libfairino/lib/
 
 # Python cache
 __pycache__/
+*.egg-info/
 
 # VS Code
 .vscode/
@@ -88,6 +89,7 @@ __pycache__/
 # Model runtime environments are local virtual environments.
 /trt_env/
 /gre_env/
+/gui_env/
 
 # Runtime recordings.
 /runs/

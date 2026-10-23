@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+import math
+
+from .models import RunProfile
+
+
+TRACKING_MODES = {
+    "off", "direct_gre", "direct_ast", "direct_either", "direct_yolo",
+    "direct_mobilenetv2", "ekf",
+}
+
+
+def validate_profile(profile: RunProfile) -> list[str]:
+    errors: list[str] = []
+    if profile.hardware_mode not in {"mock", "real"}:
+        errors.append("Hardware mode must be mock or real.")
+    if profile.tracking_mode not in TRACKING_MODES:
+        errors.append("Unknown tracking mode.")
+    if profile.first_arrival_mode not in {"off", "shadow", "enforce"}:
+        errors.append("First-arrival mode must be off, shadow, or enforce.")
+    if profile.mobilenetv2_enabled and not profile.audio_enabled:
+        errors.append("MobileNetV2 requires audio.")
+    if profile.ast_enabled and not profile.audio_enabled:
+        errors.append("AST requires audio.")
+    if profile.gre_enabled and not profile.audio_enabled:
+        errors.append("GRE requires audio.")
+    if profile.mobilenetv2_ekf_enabled and not (
+        profile.mobilenetv2_enabled and profile.fusion_enabled
+    ):
+        errors.append("MobileNetV2 EKF input requires MobileNetV2 and fusion.")
+    if profile.recording_enabled and not (profile.audio_enabled or profile.yolo_enabled):
+        errors.append("Recording requires audio or YOLO.")
+    if profile.first_arrival_mode != "off" and not profile.audio_enabled:
+        errors.append("First-arrival processing requires audio.")
+    if profile.first_arrival_mode == "enforce" and not (
+        profile.fusion_enabled and profile.tracking_mode == "ekf"
+    ):
+        errors.append("First-arrival enforce mode requires EKF tracking and fusion.")
+    direct_requirements = {
+        "direct_yolo": profile.yolo_enabled,
+        "direct_ast": profile.ast_enabled and profile.audio_enabled,
+        "direct_gre": profile.gre_enabled and profile.audio_enabled,
+        "direct_mobilenetv2": profile.mobilenetv2_enabled and profile.audio_enabled,
+        "direct_either": profile.audio_enabled and (profile.ast_enabled or profile.gre_enabled),
+    }
+    if profile.tracking_mode in direct_requirements and not direct_requirements[profile.tracking_mode]:
+        errors.append(f"{profile.tracking_mode} is missing its required detector.")
+    if profile.tracking_mode == "ekf":
+        if not profile.fusion_enabled:
+            errors.append("EKF tracking requires fusion.")
+        if not (profile.audio_enabled or profile.yolo_enabled):
+            errors.append("EKF tracking requires audio or YOLO.")
+    for name in ("max_velocity", "max_acceleration", "max_jerk", "command_rate_hz"):
+        value = getattr(profile, name)
+        if not math.isfinite(value) or value <= 0:
+            errors.append(f"{name.replace('_', ' ').title()} must be positive.")
+    if not 0.0 <= profile.smoothing_alpha <= 1.0:
+        errors.append("Smoothing alpha must be between 0 and 1.")
+    return errors
+
