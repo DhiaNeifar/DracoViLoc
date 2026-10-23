@@ -15,9 +15,12 @@ state. No direction is emitted for an inactive slot, including when
 
 ## Runtime and models
 
-Default interpreter: `~/DracoViLoc/trt_env/bin/python3`, verified with NumPy,
-SciPy, PyCUDA and TensorRT 10.3 after sourcing ROS. This does not require PyTorch,
-Transformers, or sounddevice. Override `venv_python` if moving environments.
+The laptop GUI selects `/usr/bin/python3` with
+`models/mobilenetv2/drone_fp32_t2000.engine`. Remote execution overrides both
+values and selects `~/DracoViLoc/trt_env/bin/python3` with the Jetson Orin
+engine. Both interpreters are verified with NumPy, SciPy, PyCUDA and TensorRT
+10.3 after sourcing ROS. This does not require PyTorch, Transformers, or
+sounddevice. Override `venv_python` if moving environments.
 
 Models live in the checkout's `models/mobilenetv2`. CMake records the source
 model path at build time; override `engine_path` after relocating the checkout,
@@ -81,10 +84,18 @@ From the repository root:
 ```
 
 Require max drone-probability error below 0.01 and no threshold-decision
-mismatches. To rebuild after a model/runtime change, stop GPU-heavy launches,
-run `bash scripts/build_mobilenetv2_engine.sh`, then repeat validation.
-Never silently fall back to another engine. Update metadata hashes after
-replacing artifacts.
+mismatches. To rebuild after a model/runtime change, stop GPU-heavy launches
+and use the same Python TensorRT runtime that will deserialize the engine:
+
+```bash
+/usr/bin/python3 scripts/build_mobilenetv2_engine.py \
+  --onnx models/mobilenetv2/mobilenetv2_drone.onnx \
+  --output models/mobilenetv2/drone_fp32_t2000.engine.candidate
+```
+
+Validate the candidate before replacing the selected engine. Do not use a
+different-major-version `trtexec` binary. Never silently fall back to another
+engine. Update metadata hashes after replacing artifacts.
 
 The EKF uses the same noise and innovation gate as its other direction sources;
 it does not consume classifier confidence or transform incoming frames.

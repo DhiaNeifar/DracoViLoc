@@ -6,8 +6,15 @@ def test_safe_default_is_valid():
     assert validate_profile(RunProfile()) == []
 
 
+def test_remote_requires_ssh_alias():
+    errors = validate_profile(RunProfile(execution_target="remote", ssh_alias=""))
+    assert "Remote execution requires an SSH host alias." in errors
+
+
 def test_recording_without_source_is_rejected():
-    profile = RunProfile(recording_enabled=True)
+    profile = RunProfile(
+        audio_enabled=False, mobilenetv2_enabled=False,
+        mobilenetv2_ekf_enabled=False, recording_enabled=True)
     assert "Recording requires audio or YOLO." in validate_profile(profile)
 
 
@@ -17,13 +24,18 @@ def test_direct_yolo_requires_yolo():
 
 
 def test_ekf_requires_fusion_and_source():
-    errors = validate_profile(RunProfile(tracking_mode="ekf"))
+    errors = validate_profile(RunProfile(
+        audio_enabled=False, mobilenetv2_enabled=False,
+        mobilenetv2_ekf_enabled=False, fusion_enabled=False,
+        tracking_mode="ekf"))
     assert "EKF tracking requires fusion." in errors
     assert "EKF tracking requires audio or YOLO." in errors
 
 
 def test_mobile_ekf_dependency_chain():
-    profile = RunProfile(mobilenetv2_ekf_enabled=True)
+    profile = RunProfile(
+        mobilenetv2_enabled=False, mobilenetv2_ekf_enabled=True,
+        fusion_enabled=False)
     assert "MobileNetV2 EKF input requires MobileNetV2 and fusion." in validate_profile(profile)
 
 
@@ -33,4 +45,22 @@ def test_physical_multimodal_profile_is_valid():
         mobilenetv2_enabled=True, mobilenetv2_ekf_enabled=True,
         fusion_enabled=True, tracking_mode="ekf", recording_enabled=True)
     assert validate_profile(profile) == []
+
+
+def test_dual_cobot_profile_requires_distinct_valid_addresses():
+    profile = RunProfile(dual_arm=True, left_robot_ip="192.168.58.2",
+                         right_robot_ip="192.168.58.2")
+    assert "The two cobots must use different IP addresses." in validate_profile(profile)
+    profile.right_robot_ip = "not-an-ip"
+    assert "Right cobot IP address is invalid." in validate_profile(profile)
+
+
+def test_dual_cobot_coordination_values_are_validated():
+    profile = RunProfile(dual_arm=True, target_nominal_distance=-1,
+                         lead_lock_tolerance_rad=0,
+                         dual_tracking_policy="unknown")
+    errors = validate_profile(profile)
+    assert "Target nominal distance cannot be negative." in errors
+    assert "Lead lock tolerance must be positive." in errors
+    assert any("Dual tracking policy" in error for error in errors)
 

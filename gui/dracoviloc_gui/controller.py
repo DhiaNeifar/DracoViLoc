@@ -19,6 +19,7 @@ from .processes import ProcessSupervisor
 from .profiles import ProfileStore
 from .presets import built_in_profiles
 from .recordings import discover_recordings, drive_sync_status, trigger_drive_sync
+from .remote_client import RemoteJetsonClient
 from .ros_bridge import RosBridge
 from .validation import validate_profile
 
@@ -34,6 +35,7 @@ class AppController(QObject):
     recordingsChanged = Signal(str)
     cameraFrame = Signal(object)
     quitReady = Signal()
+    remoteChanged = Signal()
 
     def __init__(self, project_root: Path) -> None:
         super().__init__()
@@ -47,10 +49,13 @@ class AppController(QObject):
             r'DeclareLaunchArgument\(\s*["\']([^"\']+)["\']',
             launch_source.read_text(encoding="utf-8"))))
         self._status: dict = {}
+        self._remote_state: dict = {"state": "disconnected", "has_control": False}
         self._shutting_down_for_quit = False
         self.processes = ProcessSupervisor(self._log, self._process_exited)
         self.ros = RosBridge(self._ros_status, self._log, self._camera_frame)
         self.ros.start()
+        self.remote = RemoteJetsonClient(
+            self._remote_connection_state, self._remote_event, self._log)
 
     @Property(str, notify=stateChanged)
     def state(self) -> str:
@@ -72,8 +77,18 @@ class AppController(QObject):
     def launchArgumentNames(self) -> list[str]:
         return self._launch_argument_names
 
+    @Property(str, notify=remoteChanged)
+    def remoteJson(self) -> str:
+        return json.dumps(self._remote_state)
+
+    @Property(bool, notify=remoteChanged)
+    def remoteControllable(self) -> bool:
+        return bool(self.remote.connected and self.remote.has_control)
+
     @Property(bool, notify=stateChanged)
     def runActive(self) -> bool:
+        if self._profile.execution_target == "remote":
+            return bool(self._status.get("run_active"))
         return bool(self.processes.running()) or self._state not in {
             AppState.IDLE, AppState.FAULT,
         }
@@ -102,6 +117,101 @@ class AppController(QObject):
 
     def _camera_frame(self, frame: object) -> None:
         self.cameraFrame.emit(frame)
+
+    def _remote_connection_state(self, state: dict) -> None:
+        self._remote_state.update(state)
+        self.remoteChanged.emit()
+        if state.get("state") == "connected":
+            mode = "controller" if state.get("has_control") else "read-only"
+            self._message = f"Connected to {state.get('alias', 'Jetson')} ({mode})."
+        elif state.get("state") == "error":
+            self._message = f"Jetson connection failed: {state.get('error')}"
+        elif state.get("state") == "disconnected" and state.get("error"):
+            self._message = str(state["error"])
+        else:
+            self._message = f"Jetson: {state.get('state', 'disconnected')}"
+        self.messageChanged.emit()
+
+    def _remote_event(self, event: str, data: dict, body: bytes) -> None:
+        if event == "status":
+            self._ros_status(data)
+            if data.get("tracking"):
+                self._set_state(AppState.TRACKING)
+            elif data.get("run_active") and self._state not in {AppState.HOMING, AppState.STOPPING_MOTION}:
+                self._set_state(AppState.HOME_READY if data.get("at_home") else AppState.READY)
+            elif not data.get("run_active") and self._state not in {AppState.PREFLIGHT, AppState.STARTING_HOST}:
+                self._set_state(AppState.IDLE)
+            self.stateChanged.emit()
+        elif event == "log":
+            self._log(data.get("subsystem", "jetson"), data.get("severity", "info"),
+                      data.get("message", ""))
+        elif event == "camera":
+            frame = dict(data)
+            frame["data"] = body
+            self.cameraFrame.emit(frame)
+
+    def _is_remote(self) -> bool:
+        return self._profile.execution_target == "remote"
+
+    def _estop_instruction(self) -> str:
+        return ("Engage both physical emergency stops before forcing shutdown."
+                if self._profile.dual_arm else
+                "Engage the physical emergency stop before forcing shutdown.")
+
+    def _remote_call(self, command: str, args: dict | None, callback=None) -> None:
+        def complete(ok: bool, result) -> None:
+            if ok:
+                message = result.get("message", "Request complete") if isinstance(result, dict) else "Request complete"
+                self._log("remote", "info", message)
+            else:
+                message = str(result)
+                self._log("remote", "error", message)
+            if callback:
+                callback(ok, result)
+            elif not ok:
+                self._set_state(AppState.FAULT, message)
+        self.remote.call(command, args or {}, complete)
+
+    @Slot()
+    def connectRemote(self) -> None:
+        self.remote.connect(self._profile.ssh_alias, self._profile.remote_agent_port)
+
+    @Slot()
+    def disconnectRemote(self) -> None:
+        self.remote.disconnect(release=True)
+        self._remote_state = {"state": "disconnected", "has_control": False}
+        self.remoteChanged.emit()
+
+    @Slot()
+    def acquireRemoteControl(self) -> None:
+        self.remote.acquire_control(lambda ok, result: self._log(
+            "remote", "info" if ok else "error",
+            "Control acquired" if ok else str(result)))
+
+    @Slot()
+    def deployRemoteAgent(self) -> None:
+        if self.runActive:
+            self._message = "Stop the active run before updating the Jetson agent."
+            self.messageChanged.emit()
+            return
+        config = {
+            "project_root": self._profile.jetson_project_root,
+            "isaac_root": self._profile.jetson_isaac_root,
+            "recordings_root": self._profile.remote_recordings_root,
+            "listen_host": "127.0.0.1", "listen_port": self._profile.remote_agent_port,
+            "yolo_image": "isaac_ros_dev-aarch64:latest",
+            "camera_topic": "/yolov8_processed_image", "camera_fps": 10.0,
+        }
+        self._message = "Deploying the Jetson agent over SSH…"
+        self.messageChanged.emit()
+        source = self.project_root / "remote_agent"
+        def complete(ok: bool, message: str) -> None:
+            self._log("deploy", "info" if ok else "error", message)
+            self._message = message
+            self.messageChanged.emit()
+            if ok:
+                self.connectRemote()
+        self.remote.deploy(self._profile.ssh_alias, source, config, complete)
 
     @Slot(str)
     def selectProfile(self, name: str) -> None:
@@ -168,6 +278,19 @@ class AppController(QObject):
             return
         self._set_state(AppState.PREFLIGHT, "Checking this run configuration…")
 
+        if self._is_remote():
+            def complete(ok: bool, result) -> None:
+                if not ok:
+                    self._set_state(AppState.FAULT, str(result))
+                    return
+                failures = [row for row in result if row.get("blocking") and not row.get("ok")]
+                self.preflightFinished.emit(json.dumps(result), not failures)
+                self._set_state(AppState.FAULT if failures else AppState.IDLE,
+                                f"Preflight found {len(failures)} blocking issue(s)." if failures
+                                else "Jetson preflight passed. Ready to start.")
+            self._remote_call("preflight", {"profile": self._profile.to_dict()}, complete)
+            return
+
         def work():
             results = run_preflight(self.project_root, self._profile)
             failures = blocking_failures(results)
@@ -186,6 +309,27 @@ class AppController(QObject):
         errors = validate_profile(self._profile)
         if errors:
             self._set_state(AppState.FAULT, " ".join(errors))
+            return
+        if self._is_remote():
+            if not self.remote.has_control:
+                self._set_state(AppState.FAULT, "Connect to the Jetson and acquire control first.")
+                return
+            self._set_state(AppState.PREFLIGHT, "Running Jetson preflight…")
+            def preflight_done(ok: bool, result) -> None:
+                if not ok:
+                    self._set_state(AppState.FAULT, str(result))
+                    return
+                failures = [row for row in result if row.get("blocking") and not row.get("ok")]
+                self.preflightFinished.emit(json.dumps(result), not failures)
+                if failures:
+                    self._set_state(AppState.FAULT, "Start blocked by Jetson preflight.")
+                    return
+                self._set_state(AppState.STARTING_HOST, "Starting the run on Jetson…")
+                self._remote_call("start", {"profile": self._profile.to_dict()},
+                                  lambda started, response: self._set_state(
+                                      AppState.READY if started else AppState.FAULT,
+                                      response.get("message", "Remote run started") if started else str(response)))
+            self._remote_call("preflight", {"profile": self._profile.to_dict()}, preflight_done)
             return
         self._set_state(AppState.PREFLIGHT, "Validating devices and runtime dependencies…")
         threading.Thread(target=self._preflight_and_start, daemon=True).start()
@@ -245,6 +389,12 @@ class AppController(QObject):
             return
         self._set_state(AppState.HOMING, "Home trajectory requested…")
 
+        if self._is_remote():
+            self._remote_call("home", {}, lambda ok, result: self._set_state(
+                AppState.HOMING if ok else AppState.READY,
+                result.get("message", "Home requested") if ok else str(result)))
+            return
+
         def complete(ok: bool, message: str):
             self._log("motion", "info" if ok else "error", message)
             if not ok:
@@ -259,6 +409,12 @@ class AppController(QObject):
         if self._state not in {AppState.HOME_READY, AppState.READY}:
             return
 
+        if self._is_remote():
+            self._remote_call("set_tracking", {"enabled": True}, lambda ok, result: self._set_state(
+                AppState.TRACKING if ok else AppState.READY,
+                result.get("message", "Tracking enabled") if ok else str(result)))
+            return
+
         def complete(ok: bool, message: str):
             self._log("motion", "info" if ok else "error", message)
             self._set_state(AppState.TRACKING if ok else AppState.READY, message)
@@ -269,6 +425,12 @@ class AppController(QObject):
         if self._state in {AppState.IDLE, AppState.PREFLIGHT, AppState.SHUTTING_DOWN}:
             return
         self._set_state(AppState.STOPPING_MOTION, "Requesting a controlled motion stop…")
+
+        if self._is_remote():
+            self._remote_call("set_tracking", {"enabled": False}, lambda ok, result: self._set_state(
+                AppState.READY if ok else AppState.FAULT,
+                result.get("message", "Motion stopped") if ok else str(result)))
+            return
 
         def complete(ok: bool, message: str):
             self._log("motion", "info" if ok else "error", message)
@@ -306,12 +468,18 @@ class AppController(QObject):
             return
         self._set_state(AppState.SHUTTING_DOWN, "Stopping motion and finalizing the run…")
 
+        if self._is_remote():
+            self._remote_call("stop_all", {}, lambda ok, result: self._set_state(
+                AppState.IDLE if ok else AppState.FAULT,
+                result.get("message", "Remote run stopped") if ok else str(result)))
+            return
+
         def after_motion(ok: bool, message: str):
             self._log("motion", "info" if ok else "error", message)
             if not ok and self._profile.hardware_mode == "real":
                 self._set_state(
                     AppState.FAULT,
-                    "Safe hold could not be confirmed. Engage the physical emergency stop before forcing shutdown.")
+                    "Safe hold could not be confirmed. " + self._estop_instruction())
                 return
             def verify_and_finish():
                 if self._wait_for_trajectory_controller():
@@ -319,7 +487,7 @@ class AppController(QObject):
                 elif self._profile.hardware_mode == "real":
                     self._set_state(
                         AppState.FAULT,
-                        "Trajectory controller did not return. Engage the physical emergency stop before forcing shutdown.")
+                        "Trajectory controller did not return. " + self._estop_instruction())
                 else:
                     self._finish_shutdown()
             threading.Thread(target=verify_and_finish, daemon=True).start()
@@ -328,7 +496,7 @@ class AppController(QObject):
         elif self._profile.hardware_mode == "real" and self.processes.is_running("host"):
             self._set_state(
                 AppState.FAULT,
-                "Tracking service is unavailable. Engage the physical emergency stop before forcing shutdown.")
+                "Tracking service is unavailable. " + self._estop_instruction())
         else:
             threading.Thread(target=self._finish_shutdown, daemon=True).start()
 
@@ -336,6 +504,11 @@ class AppController(QObject):
     def forceStopAfterEstop(self) -> None:
         """Operator attests that the physical E-stop has made termination safe."""
         self._set_state(AppState.SHUTTING_DOWN, "Physical E-stop confirmed; stopping processes…")
+        if self._is_remote():
+            self._remote_call("force_stop_all", {}, lambda ok, result: self._set_state(
+                AppState.IDLE if ok else AppState.FAULT,
+                result.get("message", "Remote run stopped") if ok else str(result)))
+            return
         threading.Thread(target=self._finish_shutdown, daemon=True).start()
 
     def _finish_shutdown(self) -> None:
@@ -347,6 +520,12 @@ class AppController(QObject):
 
     @Slot()
     def requestQuit(self) -> None:
+        if self._is_remote():
+            # Closing the dashboard intentionally does not alter the Jetson run.
+            self.remote.disconnect(release=True)
+            self.ros.stop()
+            self.quitReady.emit()
+            return
         if self.processes.running():
             self._shutting_down_for_quit = True
             self.stopAll()
@@ -356,6 +535,13 @@ class AppController(QObject):
 
     @Slot()
     def refreshRecordings(self) -> None:
+        if self._is_remote():
+            self._remote_call("list_recordings", {}, lambda ok, result:
+                self.recordingsChanged.emit(json.dumps({
+                    "items": result if ok else [], "sync_active": False,
+                    "sync_state": "Stored on Jetson" if ok else str(result),
+                })))
+            return
         root = Path(self._profile.recording_root).expanduser()
         recordings = [item.to_dict() for item in discover_recordings(root)]
         sync_ok, sync_state = drive_sync_status()
@@ -365,6 +551,10 @@ class AppController(QObject):
 
     @Slot()
     def syncNow(self) -> None:
+        if self._is_remote():
+            self._message = "Drive sync runs locally on the Jetson; use its configured timer."
+            self.messageChanged.emit()
+            return
         def work():
             ok, message = trigger_drive_sync()
             self._log("drive", "info" if ok else "error", message or "Sync request complete")
@@ -373,5 +563,17 @@ class AppController(QObject):
 
     @Slot(str)
     def openPath(self, path: str) -> None:
+        if self._is_remote():
+            destination = self.project_root / "remote_downloads"
+            self._message = f"Downloading {Path(path).name} from Jetson…"
+            self.messageChanged.emit()
+            def complete(ok: bool, result: str) -> None:
+                self._message = f"Downloaded to {result}" if ok else f"Download failed: {result}"
+                self.messageChanged.emit()
+                self._log("download", "info" if ok else "error", self._message)
+                if ok:
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(result))
+            self.remote.download_recording(path, destination, complete)
+            return
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 

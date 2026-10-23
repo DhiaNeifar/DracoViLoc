@@ -74,9 +74,26 @@ def run_preflight(project_root: Path, profile: RunProfile) -> list[CheckResult]:
                 "alsa_config", "ODAS ALSA card", card_matches,
                 f"Configuration uses card {configured.group(1) if configured else 'unknown'}; device is card {match.group(1)}"))
     if profile.mobilenetv2_enabled:
+        engine = Path(profile.mobilenetv2_engine_path).expanduser()
+        python = Path(profile.mobilenetv2_venv_python).expanduser()
+        results.append(CheckResult(
+            "mobilenet_python", "MobileNetV2 Python runtime",
+            python.is_file() and os.access(python, os.X_OK), str(python)))
         results.append(_exists(
-            "mobilenet", "MobileNetV2 TensorRT engine",
-            Path(profile.mobilenetv2_engine_path).expanduser()))
+            "mobilenet", "MobileNetV2 TensorRT engine", engine))
+        if python.is_file() and engine.is_file():
+            deserialize = (
+                "import pathlib,sys,tensorrt as trt; "
+                "p=pathlib.Path(sys.argv[1]); "
+                "r=trt.Runtime(trt.Logger(trt.Logger.ERROR)); "
+                "e=r.deserialize_cuda_engine(p.read_bytes()); "
+                "raise SystemExit(0 if e else 2)")
+            compatible, detail = _run_ok(
+                [str(python), "-c", deserialize, str(engine)], 10.0)
+            results.append(CheckResult(
+                "mobilenet_deserialize", "MobileNetV2 engine compatibility",
+                compatible, "Engine loaded successfully" if compatible else
+                (detail or "TensorRT deserialization failed")))
     if profile.ast_enabled:
         results.append(_exists("ast_python", "AST environment", project_root / "trt_env/bin/python3"))
         results.append(_exists("ast_engine", "AST engine", project_root / "models/ast/drone_ast.engine"))
@@ -124,8 +141,17 @@ def run_preflight(project_root: Path, profile: RunProfile) -> list[CheckResult]:
         results.append(CheckResult(
             "gpu", "Quadro T2000", t2000, gpu_detail or "NVIDIA GPU unavailable"))
     if profile.hardware_mode == "real":
-        ping_ok, detail = _run_ok(["ping", "-c", "1", "-W", "1", profile.robot_ip], 2.0)
-        results.append(CheckResult("robot", "FAIRINO controller", ping_ok, detail or "Unreachable"))
+        controllers = (
+            (("left_robot", "Left FAIRINO cobot", profile.left_robot_ip),
+             ("right_robot", "Right FAIRINO cobot", profile.right_robot_ip))
+            if profile.dual_arm else
+            (("robot", "FAIRINO controller", profile.robot_ip),)
+        )
+        for key, label, address in controllers:
+            ping_ok, detail = _run_ok(["ping", "-c", "1", "-W", "1", address], 2.0)
+            results.append(CheckResult(
+                key, label, ping_ok,
+                f"{address} reachable" if ping_ok else f"{address}: {detail or 'unreachable'}"))
         results.append(_exists(
             "fairino_sdk", "FAIRINO SDK",
             project_root / "src/fairino_hardware/libfairino/lib/libfairino.so"))

@@ -15,6 +15,8 @@ ApplicationWindow {
         property bool runActive: false
         property string state: "Idle"
         property string message: ""
+        property string remoteJson: "{\"state\":\"disconnected\",\"has_control\":false}"
+        property bool remoteControllable: false
         function requestQuit() {}
         function stopMotion() {}
         function runPreflight() {}
@@ -30,6 +32,10 @@ ApplicationWindow {
         function setOption(name, value) {}
         function setExpertOption(name, value) {}
         function openPath(path) {}
+        function connectRemote() {}
+        function disconnectRemote() {}
+        function acquireRemoteControl() {}
+        function deployRemoteAgent() {}
     }
     property QtObject controller: appController || fallbackController
     width: 1440
@@ -44,6 +50,7 @@ ApplicationWindow {
     property bool shutdownApproved: false
     property var profile: JSON.parse(root.controller.profileJson)
     property var liveStatus: ({})
+    property var remoteState: JSON.parse(root.controller.remoteJson)
 
     palette.window: "#0B1118"
     palette.windowText: "#E8F0F7"
@@ -69,6 +76,7 @@ ApplicationWindow {
     Connections {
         target: root.controller
         function onProfileChanged() { root.profile = JSON.parse(root.controller.profileJson) }
+        function onRemoteChanged() { root.remoteState = JSON.parse(root.controller.remoteJson) }
         function onStatusChanged(payload) { root.liveStatus = JSON.parse(payload) }
         function onPreflightFinished(payload, ok) {
             preflightModel.clear()
@@ -176,9 +184,17 @@ ApplicationWindow {
                 RowLayout {
                     Layout.bottomMargin: 26
                     Rectangle {
-                        width: 38; height: 38; radius: 11
-                        color: "#173840"
-                        Text { anchors.centerIn: parent; text: "D"; color: "#55DCE5"; font.pixelSize: 21; font.bold: true }
+                        width: 46; height: 46; radius: 11
+                        color: "#FFFFFF"
+                        clip: true
+                        Image {
+                            anchors.fill: parent
+                            anchors.margins: 3
+                            source: Qt.resolvedUrl("../assets/dracoviloc-logo.png")
+                            fillMode: Image.PreserveAspectFit
+                            smooth: true
+                            mipmap: true
+                        }
                     }
                     ColumnLayout {
                         Label { text: "DracoViLoc"; color: "#F0F7FA"; font.pixelSize: 17; font.bold: true }
@@ -227,7 +243,7 @@ ApplicationWindow {
                             Label { text: root.controller.state; color: "#D9E6EE"; font.bold: true }
                         }
                         MutedText { text: "ROS domain 42 · UDPv4" }
-                        MutedText { text: "Local control only" }
+                        MutedText { text: root.profile.execution_target === "remote" ? ("Jetson · " + (root.remoteState.state || "disconnected")) : "Local control" }
                     }
                 }
             }
@@ -253,7 +269,7 @@ ApplicationWindow {
                     SafetyButton {
                         text: "STOP MOTION"
                         Layout.preferredWidth: 154
-                        enabled: root.controller.runActive && root.controller.state !== "Shutting Down"
+                        enabled: root.controller.runActive && root.controller.state !== "Shutting Down" && (root.profile.execution_target !== "remote" || root.controller.remoteControllable)
                         onClicked: root.controller.stopMotion()
                     }
                 }
@@ -309,12 +325,12 @@ ApplicationWindow {
                                         anchors.fill: parent; anchors.margins: 16; spacing: 10
                                         SectionTitle { text: "Run state" }
                                         Label { text: root.controller.state; color: "#55DCE5"; font.pixelSize: 25; font.bold: true }
-                                        MutedText { text: root.profile.name }
+                                        MutedText { text: root.profile.name + " · " + (root.profile.dual_arm ? "TWO COBOTS" : "ONE COBOT") ; color: root.profile.dual_arm ? "#69D9B1" : "#D8A65A" }
                                         RowLayout {
-                                            CalmButton { text: "Preflight"; enabled: !root.controller.runActive; onClicked: root.controller.runPreflight() }
-                                            CalmButton { text: "Start run"; enabled: !root.controller.runActive; onClicked: root.controller.startRun() }
+                                            CalmButton { text: "Preflight"; enabled: !root.controller.runActive && (root.profile.execution_target !== "remote" || root.remoteState.state === "connected"); onClicked: root.controller.runPreflight() }
+                                            CalmButton { text: "Start run"; enabled: !root.controller.runActive && (root.profile.execution_target !== "remote" || root.controller.remoteControllable); onClicked: root.controller.startRun() }
                                         }
-                                        CalmButton { Layout.fillWidth: true; text: "Stop all safely"; enabled: root.controller.runActive; onClicked: stopAllDialog.open() }
+                                        CalmButton { Layout.fillWidth: true; text: "Stop all safely"; enabled: root.controller.runActive && (root.profile.execution_target !== "remote" || root.controller.remoteControllable); onClicked: stopAllDialog.open() }
                                         SafetyButton {
                                             Layout.fillWidth: true
                                             visible: root.controller.state === "Fault" && root.controller.runActive && root.profile.hardware_mode === "real"
@@ -331,14 +347,14 @@ ApplicationWindow {
                                         MutedText { Layout.fillWidth: true; text: "Motion never starts with the run. Home first, then arm tracking." }
                                         DelayButton {
                                             Layout.fillWidth: true; delay: 1500
-                                            text: "Hold to home · 1.5 s"
-                                            enabled: root.controller.state === "Ready" || root.controller.state === "Home Ready"
+                                            text: root.profile.dual_arm ? "Hold to home both cobots · 1.5 s" : "Hold to home · 1.5 s"
+                                            enabled: (root.controller.state === "Ready" || root.controller.state === "Home Ready") && root.liveStatus.home_service === true && (root.liveStatus.joint_count || 0) >= (root.profile.dual_arm ? 12 : 6) && (root.profile.execution_target !== "remote" || root.controller.remoteControllable)
                                             onActivated: homeDialog.open()
                                         }
                                         DelayButton {
                                             Layout.fillWidth: true; delay: 1500
                                             text: "Hold to enable tracking · 1.5 s"
-                                            enabled: root.controller.state === "Home Ready" || root.controller.state === "Ready"
+                                            enabled: (root.controller.state === "Home Ready" || root.controller.state === "Ready") && root.liveStatus.tracking_service === true && (root.profile.execution_target !== "remote" || root.controller.remoteControllable)
                                             onActivated: trackingDialog.open()
                                         }
                                         MutedText { Layout.fillWidth: true; text: "Software stop is not a physical emergency stop."; color: "#D8A65A" }
@@ -353,8 +369,14 @@ ApplicationWindow {
                                 anchors.fill: parent; anchors.margins: 18; spacing: 32
                                 ColumnLayout {
                                     SectionTitle { text: "ROS health" }
-                                    MutedText { text: "Joint feedback" }
+                                    MutedText { text: root.profile.dual_arm ? "Dual-cobot joint feedback" : "Joint feedback" }
                                     Label { text: (root.liveStatus.joint_count || 0) + " joints"; color: "#DDEAF1"; font.pixelSize: 18 }
+                                    MutedText {
+                                        visible: root.profile.dual_arm
+                                        property var arms: root.liveStatus.arms || ({})
+                                        text: "Left " + ((arms.left && arms.left.joint_count) || 0) + "/6 · Right " + ((arms.right && arms.right.joint_count) || 0) + "/6"
+                                        color: root.liveStatus.dual_arm_detected ? "#69D9B1" : "#D8A65A"
+                                    }
                                 }
                                 Repeater {
                                     model: ["/yolo/direction", "/mobilenetv2/direction", "/ekf/direction"]
@@ -447,16 +469,94 @@ ApplicationWindow {
                                 CalmButton { text: "Save"; enabled: !root.controller.runActive && saveProfileName.text.length > 0; onClicked: root.controller.saveProfile(saveProfileName.text) }
                             }
                         }
+                        Panel {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: root.profile.execution_target === "remote" ? 320 : 128
+                            GridLayout {
+                                anchors.fill: parent; anchors.margins: 18
+                                columns: 4; columnSpacing: 14; rowSpacing: 10
+                                SectionTitle { text: "Execution target"; Layout.columnSpan: 4 }
+                                MutedText { text: "Run on" }
+                                ComboBox {
+                                    model: ["local", "remote"]
+                                    currentIndex: root.profile.execution_target === "remote" ? 1 : 0
+                                    enabled: !root.controller.runActive
+                                    onActivated: root.controller.setOption("execution_target", currentText)
+                                }
+                                MutedText {
+                                    text: root.profile.execution_target === "remote" ? "Tracking continues if this laptop disconnects." : "Processes run on this laptop."
+                                    Layout.columnSpan: 2
+                                    color: root.profile.execution_target === "remote" ? "#D8A65A" : "#8FA5B8"
+                                }
+                                MutedText { visible: root.profile.execution_target === "remote"; text: "SSH alias" }
+                                TextField {
+                                    visible: root.profile.execution_target === "remote"
+                                    text: root.profile.ssh_alias || "jetson"
+                                    enabled: !root.controller.runActive
+                                    onEditingFinished: root.controller.setOption("ssh_alias", text)
+                                }
+                                MutedText { visible: root.profile.execution_target === "remote"; text: "Project on Jetson" }
+                                TextField {
+                                    visible: root.profile.execution_target === "remote"
+                                    text: root.profile.jetson_project_root || "~/DracoViLoc"
+                                    enabled: !root.controller.runActive
+                                    onEditingFinished: root.controller.setOption("jetson_project_root", text)
+                                }
+                                MutedText { visible: root.profile.execution_target === "remote"; text: "Isaac workspace" }
+                                TextField {
+                                    visible: root.profile.execution_target === "remote"
+                                    text: root.profile.jetson_isaac_root || "~/workspaces/isaac_ros-dev"
+                                    enabled: !root.controller.runActive
+                                    onEditingFinished: root.controller.setOption("jetson_isaac_root", text)
+                                }
+                                MutedText { visible: root.profile.execution_target === "remote"; text: "Recordings on Jetson" }
+                                TextField {
+                                    visible: root.profile.execution_target === "remote"
+                                    text: root.profile.remote_recordings_root || "~/DracoViLoc/runs"
+                                    enabled: !root.controller.runActive
+                                    onEditingFinished: root.controller.setOption("remote_recordings_root", text)
+                                }
+                                MutedText {
+                                    visible: root.profile.execution_target === "remote"
+                                    text: "Status: " + (root.remoteState.state || "disconnected") + (root.remoteState.has_control ? " · controller" : " · read-only")
+                                    Layout.columnSpan: 2
+                                }
+                                RowLayout {
+                                    visible: root.profile.execution_target === "remote"
+                                    Layout.columnSpan: 2
+                                    CalmButton {
+                                        text: root.remoteState.state === "connected" ? "Disconnect" : "Connect"
+                                        onClicked: root.remoteState.state === "connected" ? root.controller.disconnectRemote() : root.controller.connectRemote()
+                                    }
+                                    CalmButton {
+                                        text: "Take control"
+                                        enabled: root.remoteState.state === "connected" && !root.remoteState.has_control
+                                        onClicked: root.controller.acquireRemoteControl()
+                                    }
+                                    CalmButton {
+                                        text: "Deploy / update agent"
+                                        enabled: !root.controller.runActive
+                                        onClicked: root.controller.deployRemoteAgent()
+                                    }
+                                }
+                            }
+                        }
                         RowLayout {
                             Layout.fillWidth: true; spacing: 16
                             Panel {
-                                Layout.fillWidth: true; Layout.preferredHeight: 330
+                                Layout.fillWidth: true; Layout.preferredHeight: 390
                                 GridLayout {
                                     anchors.fill: parent; anchors.margins: 18; columns: 2; columnSpacing: 24; rowSpacing: 13
                                     SectionTitle { text: "Pipeline"; Layout.columnSpan: 2 }
                                     CheckBox { text: "Audio / ODAS"; checked: root.profile.audio_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("audio_enabled", checked) }
                                     CheckBox { text: "Isaac YOLO"; checked: root.profile.yolo_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("yolo_enabled", checked) }
                                     CheckBox { text: "MobileNetV2"; checked: root.profile.mobilenetv2_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("mobilenetv2_enabled", checked) }
+                                    CheckBox {
+                                        text: "MobileNetV2 → EKF"
+                                        checked: root.profile.mobilenetv2_ekf_enabled
+                                        enabled: !root.controller.runActive && root.profile.mobilenetv2_enabled && root.profile.fusion_enabled
+                                        onToggled: root.controller.setOption("mobilenetv2_ekf_enabled", checked)
+                                    }
                                     CheckBox { text: "AST"; checked: root.profile.ast_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("ast_enabled", checked) }
                                     CheckBox { text: "GRE"; checked: root.profile.gre_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("gre_enabled", checked) }
                                     CheckBox { text: "EKF fusion"; checked: root.profile.fusion_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("fusion_enabled", checked) }
@@ -465,14 +565,18 @@ ApplicationWindow {
                                 }
                             }
                             Panel {
-                                Layout.fillWidth: true; Layout.preferredHeight: 330
+                                Layout.fillWidth: true; Layout.preferredHeight: 390
                                 GridLayout {
                                     anchors.fill: parent; anchors.margins: 18; columns: 2; columnSpacing: 18; rowSpacing: 12
                                     SectionTitle { text: "Robot and tracking"; Layout.columnSpan: 2 }
                                     MutedText { text: "Hardware" }
                                     ComboBox { model: ["mock", "real"]; currentIndex: root.profile.hardware_mode === "real" ? 1 : 0; enabled: !root.controller.runActive; onActivated: root.controller.setOption("hardware_mode", currentText) }
-                                    MutedText { text: "Robot IP" }
-                                    TextField { text: root.profile.robot_ip; enabled: !root.controller.runActive; onEditingFinished: root.controller.setOption("robot_ip", text) }
+                                    MutedText { text: "Cobot configuration" }
+                                    Switch { text: "Two cobots"; checked: root.profile.dual_arm; enabled: !root.controller.runActive; onToggled: root.controller.setOption("dual_arm", checked) }
+                                    MutedText { text: root.profile.dual_arm ? "Left cobot IP" : "Cobot IP" }
+                                    TextField { text: root.profile.dual_arm ? root.profile.left_robot_ip : root.profile.robot_ip; enabled: !root.controller.runActive; onEditingFinished: root.controller.setOption(root.profile.dual_arm ? "left_robot_ip" : "robot_ip", text) }
+                                    MutedText { visible: root.profile.dual_arm; text: "Right cobot IP" }
+                                    TextField { visible: root.profile.dual_arm; text: root.profile.right_robot_ip; enabled: !root.controller.runActive; onEditingFinished: root.controller.setOption("right_robot_ip", text) }
                                     MutedText { text: "Tracking source" }
                                     ComboBox { id: modeBox; model: ["off", "direct_yolo", "direct_mobilenetv2", "direct_ast", "direct_gre", "direct_either", "ekf"]; currentIndex: model.indexOf(root.profile.tracking_mode); onActivated: root.controller.setOption("tracking_mode", currentText) }
                                     MutedText { text: "Use RViz" }
@@ -480,6 +584,33 @@ ApplicationWindow {
                                     MutedText { text: "MoveIt" }
                                     Switch { checked: root.profile.use_moveit; onToggled: root.controller.setOption("use_moveit", checked) }
                                 }
+                            }
+                        }
+                        Panel {
+                            visible: root.profile.dual_arm
+                            Layout.fillWidth: true; Layout.preferredHeight: 235
+                            GridLayout {
+                                anchors.fill: parent; anchors.margins: 18
+                                columns: 4; columnSpacing: 18; rowSpacing: 10
+                                SectionTitle { text: "Dual-cobot geometry and coordination"; Layout.columnSpan: 4 }
+                                MutedText { text: "Right cobot X (m)" }
+                                TextField { text: root.profile.second_arm_x; enabled: !root.controller.runActive; onEditingFinished: root.controller.setOption("second_arm_x", text) }
+                                MutedText { text: "Right cobot Y (m)" }
+                                TextField { text: root.profile.second_arm_y; enabled: !root.controller.runActive; onEditingFinished: root.controller.setOption("second_arm_y", text) }
+                                MutedText { text: "Right cobot Z (m)" }
+                                TextField { text: root.profile.second_arm_z; enabled: !root.controller.runActive; onEditingFinished: root.controller.setOption("second_arm_z", text) }
+                                MutedText { text: "Target distance (m)" }
+                                TextField { text: root.profile.target_nominal_distance; enabled: !root.controller.runActive; onEditingFinished: root.controller.setOption("target_nominal_distance", text) }
+                                MutedText { text: "Tracking policy" }
+                                ComboBox {
+                                    model: ["first_arm_lead", "simultaneous"]
+                                    currentIndex: model.indexOf(root.profile.dual_tracking_policy)
+                                    enabled: !root.controller.runActive
+                                    onActivated: root.controller.setOption("dual_tracking_policy", currentText)
+                                }
+                                MutedText { text: "Lead tolerance (rad)" }
+                                TextField { text: root.profile.lead_lock_tolerance_rad; enabled: !root.controller.runActive; onEditingFinished: root.controller.setOption("lead_lock_tolerance_rad", text) }
+                                MutedText { text: "first_arm_lead waits for the sensor-side cobot to align before moving the follower; simultaneous moves both together."; Layout.columnSpan: 4 }
                             }
                         }
                         Panel {
@@ -560,7 +691,7 @@ ApplicationWindow {
                                     }
                                     Label { text: (size_bytes / 1048576).toFixed(1) + " MB"; color: "#98ABBA" }
                                     Label { text: state; color: state === "complete" ? "#63D8AA" : "#E3B466"; Layout.preferredWidth: 90 }
-                                    CalmButton { text: "Open"; onClicked: root.controller.openPath(path) }
+                                    CalmButton { text: root.profile.execution_target === "remote" ? "Download" : "Open"; enabled: root.profile.execution_target !== "remote" || state === "complete"; onClicked: root.controller.openPath(path) }
                                 }
                             }
                         }
@@ -581,6 +712,7 @@ ApplicationWindow {
                         ListView {
                             anchors.fill: parent; anchors.margins: 8; clip: true; model: logModel; spacing: 2
                             delegate: Rectangle {
+                                required property int index
                                 required property string timestamp
                                 required property string subsystem
                                 required property string severity
@@ -620,7 +752,7 @@ ApplicationWindow {
                             ColumnLayout {
                                 anchors.fill: parent; anchors.margins: 20
                                 SectionTitle { text: "Safety boundary" }
-                                MutedText { text: "This application can request controlled ROS motion stops. It is not safety-rated and cannot replace the FAIRINO emergency stop, controller safeguards, or a clear workspace." }
+                                MutedText { text: root.profile.dual_arm ? "This application can request controlled ROS motion stops for both cobots. It is not safety-rated and cannot replace either FAIRINO emergency stop, controller safeguards, or clear workspaces." : "This application can request controlled ROS motion stops. It is not safety-rated and cannot replace the FAIRINO emergency stop, controller safeguards, or a clear workspace." }
                                 Rectangle { Layout.fillWidth: true; height: 1; color: "#263746" }
                                 MutedText { text: "The application will not automatically home or enable tracking. Real-arm shutdown is blocked if a controlled hold cannot be confirmed."; color: "#D8A65A" }
                             }
@@ -669,14 +801,14 @@ ApplicationWindow {
         width: 500
         standardButtons: Dialog.Ok | Dialog.Cancel
         onAccepted: root.controller.requestHome()
-        contentItem: MutedText { text: "Confirm the workspace is clear and the physical emergency stop is within reach. The arm will move to its home pose."; width: 430 }
+        contentItem: MutedText { text: root.profile.dual_arm ? "Confirm both cobot workspaces are clear and both emergency stops are within reach. Both cobots will move together to their home poses." : "Confirm the workspace is clear and the physical emergency stop is within reach. The arm will move to its home pose."; width: 430 }
     }
     Dialog {
         id: trackingDialog; modal: true; anchors.centerIn: parent; title: "Enable tracking"
         width: 500
         standardButtons: Dialog.Ok | Dialog.Cancel
         onAccepted: root.controller.enableTracking()
-        contentItem: MutedText { text: "Tracking will wait for a fresh detector direction, then command joints 1 and 4. Keep the workspace clear."; width: 430 }
+        contentItem: MutedText { text: root.profile.dual_arm ? "Tracking will use the configured coordination policy and command joints 1 and 4 on both cobots. Keep both workspaces clear." : "Tracking will wait for a fresh detector direction, then command joints 1 and 4. Keep the workspace clear."; width: 430 }
     }
     Dialog {
         id: stopAllDialog; modal: true; anchors.centerIn: parent; title: "Stop the complete run?"
@@ -690,13 +822,13 @@ ApplicationWindow {
         width: 500
         standardButtons: Dialog.Ok | Dialog.Cancel
         onAccepted: root.controller.requestQuit()
-        contentItem: MutedText { text: "An active run is managed by this window. Confirm to stop motion, finalize recordings, shut down managed processes, and exit."; width: 430 }
+        contentItem: MutedText { text: root.profile.execution_target === "remote" ? "The Jetson run—including tracking—will continue. This window will release its controller lease and close." : "An active run is managed by this window. Confirm to stop motion, finalize recordings, shut down managed processes, and exit."; width: 430; color: root.profile.execution_target === "remote" ? "#D8A65A" : "#8FA5B8" }
     }
     Dialog {
         id: forceStopDialog; modal: true; anchors.centerIn: parent; title: "Confirm physical emergency stop"
         width: 520
         standardButtons: Dialog.Ok | Dialog.Cancel
         onAccepted: root.controller.forceStopAfterEstop()
-        contentItem: MutedText { text: "Only continue if the physical FAIRINO emergency stop is engaged and motion is mechanically safe. This will terminate the control processes without a confirmed ROS hold."; width: 450; color: "#FF9AA2" }
+        contentItem: MutedText { text: root.profile.dual_arm ? "Only continue if both physical FAIRINO emergency stops are engaged and both cobots are mechanically safe. This will terminate the control processes without a confirmed ROS hold." : "Only continue if the physical FAIRINO emergency stop is engaged and motion is mechanically safe. This will terminate the control processes without a confirmed ROS hold."; width: 450; color: "#FF9AA2" }
     }
 }

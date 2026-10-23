@@ -29,5 +29,8 @@ def generate_launch_description():
             cmd += ['--' + name.replace('_', '-'), LaunchConfiguration(name)]
     return LaunchDescription([
         *[DeclareLaunchArgument(name, default_value=value) for name, value in defaults.items()],
-        ExecuteProcess(cmd=cmd, output='screen', emulate_tty=True),
+        ExecuteProcess(
+            cmd=cmd, output='screen', emulate_tty=True,
+            respawn=True, respawn_delay=2.0,
+        ),
     ])

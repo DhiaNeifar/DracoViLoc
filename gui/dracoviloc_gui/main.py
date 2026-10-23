@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, QUrl, qInstallMessageHandler
-from PySide6.QtGui import QFontDatabase, QGuiApplication
+from PySide6.QtGui import QFontDatabase, QGuiApplication, QIcon
 from PySide6.QtQml import QQmlApplicationEngine
 
 from .controller import AppController
@@ -38,6 +38,7 @@ def main() -> int:
     app.setApplicationName("DracoViLoc Control Center")
 
     root = project_root()
+    app.setWindowIcon(QIcon(str(root / "gui/assets/dracoviloc-logo.png")))
     engine = QQmlApplicationEngine()
     controller = AppController(root)
     camera = CameraImageProvider()

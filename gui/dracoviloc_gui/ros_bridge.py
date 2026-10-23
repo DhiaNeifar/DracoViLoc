@@ -28,6 +28,7 @@ class RosBridge:
         self._tracking_event = ""
         self._controllers: dict[str, str] = {}
         self._directions: dict[str, dict[str, float]] = {}
+        self._arms: dict[str, dict[str, object]] = {}
         self._controller_query_pending = False
 
     def start(self) -> None:
@@ -75,11 +76,25 @@ class RosBridge:
                         return all(abs(math.remainder(observed[prefix + name] - target, 2 * math.pi)) <= 0.035
                                    for name, target in home.items())
                     self._at_home = (single and matches()) or (left and right and matches("left_") and matches("right_"))
+                    if left or right:
+                        self._arms = {
+                            "left": {"joint_count": sum(name.startswith("left_joint") for name in message.name),
+                                     "at_home": left and matches("left_")},
+                            "right": {"joint_count": sum(name.startswith("right_joint") for name in message.name),
+                                      "at_home": right and matches("right_")},
+                        }
+                    else:
+                        self._arms = {"primary": {
+                            "joint_count": sum(name in home for name in message.name),
+                            "at_home": single and matches(),
+                        }}
                 elif topic == "/tracking/events":
                     self._tracking_event = message.data
             return callback
 
-        self._node.create_subscription(JointState, "/joint_states", seen("/joint_states"), 10)
+        self._node.create_subscription(
+            JointState, "/joint_states", seen("/joint_states"),
+            rclpy.qos.qos_profile_sensor_data)
         self._node.create_subscription(String, "/tracking/events", seen("/tracking/events"), 20)
         self._node.create_subscription(String, "/diagnostics/events", seen("/diagnostics/events"), 20)
         def direction_seen(topic: str):
@@ -140,6 +155,8 @@ class RosBridge:
                     self.status_callback({
                         "freshness": freshness,
                         "joint_count": self._joint_count,
+                        "arms": self._arms,
+                        "dual_arm_detected": "left" in self._arms and "right" in self._arms,
                         "at_home": self._at_home,
                         "tracking_event": self._tracking_event,
                         "home_service": self._home_client.service_is_ready(),

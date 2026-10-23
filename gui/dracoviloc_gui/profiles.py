@@ -24,6 +24,17 @@ class ProfileStore:
                 return profiles
             for item in payload.get("profiles", []):
                 profile = RunProfile.from_dict(item)
+                # Migrate the former shared local/Jetson defaults. Remote runs
+                # are overridden by the agent; local runs require the T2000
+                # engine and the verified system TensorRT interpreter.
+                if profile.execution_target == "local":
+                    if item.get("mobilenetv2_engine_path") == (
+                            "~/DracoViLoc/models/mobilenetv2/drone_fp32.engine"):
+                        profile.mobilenetv2_engine_path = (
+                            "~/DracoViLoc/models/mobilenetv2/drone_fp32_t2000.engine")
+                    if item.get("mobilenetv2_venv_python") == (
+                            "~/DracoViLoc/trt_env/bin/python3"):
+                        profile.mobilenetv2_venv_python = "/usr/bin/python3"
                 profiles[profile.name] = profile
         except (OSError, ValueError, TypeError):
             return profiles

@@ -11,6 +11,9 @@ class CameraImageProvider(QQuickImageProvider):
         self.image = QImage()
 
     def update(self, frame: dict) -> None:
+        if frame.get("encoding") == "jpeg":
+            self.image = QImage.fromData(frame["data"], "JPEG")
+            return
         fmt = QImage.Format_RGB888
         image = QImage(
             frame["data"], frame["width"], frame["height"], frame["step"], fmt).copy()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import ipaddress
 
 from .models import RunProfile
 
@@ -13,8 +14,33 @@ TRACKING_MODES = {
 
 def validate_profile(profile: RunProfile) -> list[str]:
     errors: list[str] = []
+    if profile.execution_target not in {"local", "remote"}:
+        errors.append("Execution target must be local or remote.")
+    if profile.execution_target == "remote" and not profile.ssh_alias.strip():
+        errors.append("Remote execution requires an SSH host alias.")
+    if not 1 <= profile.remote_agent_port <= 65535:
+        errors.append("Remote agent port must be between 1 and 65535.")
     if profile.hardware_mode not in {"mock", "real"}:
         errors.append("Hardware mode must be mock or real.")
+    if profile.dual_tracking_policy not in {"first_arm_lead", "simultaneous"}:
+        errors.append("Dual tracking policy must be first_arm_lead or simultaneous.")
+    if profile.dual_arm:
+        if profile.left_robot_ip == profile.right_robot_ip:
+            errors.append("The two cobots must use different IP addresses.")
+        for label, address in (("Left cobot", profile.left_robot_ip),
+                               ("Right cobot", profile.right_robot_ip)):
+            try:
+                ipaddress.ip_address(address)
+            except ValueError:
+                errors.append(f"{label} IP address is invalid.")
+        geometry = (profile.second_arm_x, profile.second_arm_y, profile.second_arm_z,
+                    profile.target_nominal_distance, profile.lead_lock_tolerance_rad)
+        if not all(math.isfinite(value) for value in geometry):
+            errors.append("Dual-cobot geometry values must be finite.")
+        if profile.target_nominal_distance < 0:
+            errors.append("Target nominal distance cannot be negative.")
+        if profile.lead_lock_tolerance_rad <= 0:
+            errors.append("Lead lock tolerance must be positive.")
     if profile.tracking_mode not in TRACKING_MODES:
         errors.append("Unknown tracking mode.")
     if profile.first_arrival_mode not in {"off", "shadow", "enforce"}:

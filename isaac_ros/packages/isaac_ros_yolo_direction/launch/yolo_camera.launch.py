@@ -105,6 +105,7 @@ def generate_launch_description():
     height = LaunchConfiguration('height')
     model_path = LaunchConfiguration('model_path')
     engine_path = LaunchConfiguration('engine_path')
+    num_blocks = LaunchConfiguration('num_blocks')
     direction_frame = LaunchConfiguration('direction_frame')
     use_viewer = LaunchConfiguration('use_viewer')
 
@@ -120,7 +121,7 @@ def generate_launch_description():
             'num_classes': '1',
             'input_width': width,
             'input_height': height,
-            'num_blocks': '8',
+            'num_blocks': num_blocks,
         }.items(),
     )
 
@@ -159,6 +160,10 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument('width', default_value='640'),
         DeclareLaunchArgument('height', default_value='480'),
+        DeclareLaunchArgument(
+            'num_blocks', default_value='4',
+            description='NITROS buffer blocks; four fits the 8 GB Jetson runtime.',
+        ),
         DeclareLaunchArgument('camera_fps', default_value='60'),
         DeclareLaunchArgument('publish_rate', default_value='30.0'),
         DeclareLaunchArgument('horizontal_fov_deg', default_value='100.0'),

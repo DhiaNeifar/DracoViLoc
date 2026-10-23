@@ -23,8 +23,8 @@ from audio_utils_msgs.msg import AudioFrame
 from geometry_msgs.msg import Vector3Stamped
 from odas_ros_msgs.msg import OdasSst, OdasSstArrayStamped
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Float64MultiArray
 from std_srvs.srv import SetBool
-from trajectory_msgs.msg import JointTrajectory
 
 ROOT = Path(__file__).resolve().parents[3]
 LOGS = Path('/tmp') / ('mobilenetv2-smoke-' + time.strftime('%Y%m%d-%H%M%S'))
@@ -65,7 +65,8 @@ def main():
         ('mobile', '/mobilenetv2/direction', Vector3Stamped, 10),
         ('ekf', '/ekf/direction', Vector3Stamped, 10),
         ('joint', '/joint_states', JointState, qos_profile_sensor_data),
-        ('command', '/arm_controller/joint_trajectory', JointTrajectory, 10),
+        ('command', '/arm_tracking_controller/commands', Float64MultiArray,
+         qos_profile_sensor_data),
     ]:
         node.create_subscription(kind, topic, lambda msg, k=key: received[k].append(msg), qos)
     audio_pub = node.create_publisher(AudioFrame, '/sss', 10)
@@ -109,18 +110,31 @@ def main():
         msg = received['joint'][-1]
         return np.array([msg.position[msg.name.index('joint' + str(i))] for i in range(1, 7)])
 
-    def enable_tracking():
+    def set_tracking(enabled):
         client = node.create_client(SetBool, '/demo/tracking')
         assert client.wait_for_service(timeout_sec=10), 'tracker service did not become available'
         request = SetBool.Request()
-        request.data = True
+        request.data = enabled
         future = client.call_async(request)
         deadline = time.monotonic() + 20
         while not future.done() and time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=0.1)
         assert future.done(), 'tracking service timed out'
-        assert future.result().success, f'could not enable tracking: {future.result().message}'
+        assert future.result().success, f'could not change tracking: {future.result().message}'
+        message = future.result().message
         node.destroy_client(client)
+        return message
+
+    def enable_tracking():
+        set_tracking(True)
+
+    def disable_tracking():
+        set_tracking(False)
+        # The tracker performs a jerk-limited stop before restoring the
+        # trajectory controller. Keep spinning, then ask its authoritative
+        # state once more before replacing this tracker process.
+        run(2, publish=False)
+        assert 'disabled' in set_tracking(False).lower()
 
     try:
         robot = start('robot', 'ros2', 'launch', 'dracoviloc_bringup', 'demo.launch.py',
@@ -182,6 +196,7 @@ def main():
         run(1, publish=False)
         np.testing.assert_allclose(positions(), hold, atol=0.01)
         result['stale_target_hold'] = True
+        disable_tracking()
         stop(tracker)
 
         direction[:] = [0.8, -0.6, 0.0]
