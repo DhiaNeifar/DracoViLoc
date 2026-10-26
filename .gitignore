@@ -118,5 +118,8 @@ isaac_ros/results/
 src/vicoman_vision/realsense-ros/
 INSTRUCTION.md
 
+# Visual models
+models/
+
 # D-FINE source for ONNX export, cloned at a pinned commit (yolo_models.dfine_source)
 third_party/
