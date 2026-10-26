@@ -30,24 +30,51 @@ crashes, the GUI reattaches to it on restart, and stopping sends Ctrl+C
 (SIGINT) with a SIGKILL fallback after the stop timeout. Inspect them with
 `systemctl --user list-units 'dracoviloc-*'`.
 
-Each session writes to `runs/logs/<YYYY-MM-DD_HH-MM-SS>/`:
+### Where everything goes
 
-| File | Contents |
-|---|---|
-| `session.json` | machine, user, git commit/branch/dirty, GUI version, start and end time |
-| `events.jsonl` | every operator action (button, setting change with old/new value, navigation, dialog), state change, message, process start/stop/exit, warning and error |
-| `processes/<name>_<time>.log` | the full terminal output of each process, line by line with timestamps (ANSI colors preserved) |
-| `processes/<name>_<time>.status.json` | command, PIDs, start/stop/end time, exit code or signal |
-| `runs/run_<time>.json` | the profile and exact commands of each run |
+Every run is one folder, `runs/<YYYY-MM-DD_HH-MM-SS>/` (also when launched
+from a terminal without the GUI):
 
-Actions, state changes and errors are written to disk (fsync) as they happen.
-The Logs page shows the events and one live terminal per process; logs stay
-on the machine and are not synced to Drive.
+| Path | Contents | Google Drive |
+|---|---|---|
+| `video/camera.mp4`, `video/metadata.json` | raw camera recording (never the overlay) | uploaded |
+| `audio/audio_sss.wav`, `audio_sst.jsonl`, `metadata.json` (+ `channels/`) | separated audio and ODAS tracks | uploaded |
+| `telemetry.jsonl` | monitoring snapshots (2 Hz) | local |
+| `bag/` | ROS bag of every diagnostics and state topic (no images) | local |
+| `diagnostics/` | arm end-effector kinematics and events | local |
+| `run.json` | profile, exact commands, YOLO model, machine, git revision, start/end, outcome | local |
+| `events.jsonl` | operator actions, state changes, process events during the run | local |
+| `processes/<name>.log` (+ `.status.json`) | full terminal output of host, YOLO, ... | local |
 
-Whenever the camera (YOLO) is enabled, the raw `/image` stream is always
-recorded to `runs/video/<time>/camera.mp4`; this cannot be switched off, and
-overlay images are never recorded. Preflight warns when this machine cannot
-upload recordings to Google Drive (see `docs/DRIVE_SYNC.md`).
+Activity outside runs stays out of `runs/`: `logs/<YYYY-MM-DD>.jsonl` holds
+every event of every GUI session that day, and `logs/jobs/` the output of
+setup and build jobs. Actions, state changes and errors are written to disk
+(fsync) as they happen. The Logs page shows the events and one live terminal
+per process.
+
+Whenever the camera is enabled the raw image is always recorded; this cannot
+be switched off. Each stream starts recording with its first message (the
+camera does not wait for ODAS to warm up), frames are placed by their
+timestamp so the video lasts exactly as long as the recording, and gaps
+repeat the previous frame. Preflight warns when this machine cannot upload
+recordings to Google Drive (see `docs/DRIVE_SYNC.md`).
+
+## Processes page
+
+Lists everything DracoViLoc runs on the machine: the GUI's units (with each
+of their processes, e.g. rviz2 inside the host stack), processes started
+from a terminal, and Docker containers. **Stop** sends Ctrl+C, then SIGTERM,
+then SIGKILL, to the process and all its children, and checks the result;
+**Kill** sends SIGKILL at once. Whatever survives is reported with the
+reason (a zombie waiting for its parent, or a process stuck in a driver such
+as the USB camera, which only unplugging or a reboot clears). **Restart**
+starts YOLO or RViz again with the same command, **Open RViz** opens RViz on
+its own, and **Clean up everything** stops all of it and verifies nothing is
+left. Every action and its outcome are logged.
+
+The arms are chosen in Run setup: **Mock (simulated arms)** or **Real
+FAIRINO cobots**, with one IP address or one per cobot. **Check connection**
+pings each controller and opens its XML-RPC port 20003 (safe while running).
 
 ## Setup & builds
 
@@ -102,6 +129,17 @@ from a terminal:
 gui_env/bin/python -m dracoviloc_gui.yolo_models list
 gui_env/bin/python -m dracoviloc_gui.yolo_models prepare auto   # export + plan
 ```
+
+## Perception page
+
+Live monitoring of a local run: camera previews (**Raw**, **Overlay** with
+YOLO boxes, or **Side by side**; the Dashboard uses the same choice), YOLO
+rates, scores and latency, MobileNetV2 per-channel probabilities and votes,
+EKF accept/reject counts and NIS per source, per-joint velocity/acceleration/
+jerk, end-effector kinematics and ODAS sources. Data comes from
+`dracoviloc_monitor` (see its README); the GUI only receives JPEG previews and
+a 10 Hz telemetry snapshot. Each run folder also keeps `telemetry.jsonl`, a
+ROS bag of all diagnostics and state topics, and the arm kinematics.
 
 ## Remote Jetson control
 

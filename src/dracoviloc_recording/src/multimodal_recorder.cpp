@@ -1,6 +1,7 @@
 #include <audio_utils_msgs/msg/audio_frame.hpp>
 #include <odas_ros_msgs/msg/odas_sst_array_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/compressed_image.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
 #include <sys/types.h>
@@ -12,6 +13,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdint>
 #include <cstring>
@@ -34,6 +36,9 @@ public:
   {
     std::signal(SIGPIPE, SIG_IGN);
     const auto root = declare_parameter<std::string>("output_root", "runs");
+    // When set, this run's folder: files go to <output_directory>/video and
+    // <output_directory>/audio. Otherwise <output_root>/{video,audio}/<time>.
+    const auto output_directory = declare_parameter<std::string>("output_directory", "");
     // Default to the clean, undetected camera feed rather than the
     // YOLO-annotated view, so recordings stay usable for later annotation.
     video_topic_ = declare_parameter<std::string>(
@@ -52,17 +57,35 @@ public:
 
     const auto base = fs::absolute(fs::path(root));
     const auto stamp = timestamp();
+    const auto modality_directory = [&](const char * modality) {
+      return output_directory.empty() ? base / modality / stamp :
+             fs::absolute(fs::path(output_directory)) / modality;
+    };
     if (require_video_) {
-      video_directory_ = base / "video" / stamp;
+      video_directory_ = modality_directory("video");
       fs::create_directories(video_directory_);
       video_path_ = video_directory_ / "camera.mp4";
-      video_sub_ = create_subscription<sensor_msgs::msg::Image>(
-        video_topic_, rclcpp::SensorDataQoS(),
-        [this](sensor_msgs::msg::Image::ConstSharedPtr message) {record_video(*message);});
+      // Reliable: with the UDP-only DDS transport, best-effort delivery of
+      // camera frames lost many of them. The JPEG stream (<topic>/compressed)
+      // is preferred: ~100 KB per frame arrives complete at full rate.
+      const auto video_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+      compressed_input_ = video_topic_.size() > 11 &&
+        video_topic_.compare(video_topic_.size() - 11, 11, "/compressed") == 0;
+      if (compressed_input_) {
+        compressed_video_sub_ = create_subscription<sensor_msgs::msg::CompressedImage>(
+          video_topic_, video_qos,
+          [this](sensor_msgs::msg::CompressedImage::ConstSharedPtr message) {
+            record_compressed_video(*message);
+          });
+      } else {
+        video_sub_ = create_subscription<sensor_msgs::msg::Image>(
+          video_topic_, video_qos,
+          [this](sensor_msgs::msg::Image::ConstSharedPtr message) {record_video(*message);});
+      }
     }
 
     if (require_audio_) {
-      audio_directory_ = base / "audio" / stamp;
+      audio_directory_ = modality_directory("audio");
       fs::create_directories(audio_directory_);
       audio_path_ = audio_directory_ / "audio_sss.wav";
       const auto audio_qos = rclcpp::QoS(rclcpp::KeepLast(50)).reliable();
@@ -73,7 +96,7 @@ public:
 
     if (require_sst_) {
       if (audio_directory_.empty()) {
-        audio_directory_ = base / "audio" / stamp;
+        audio_directory_ = modality_directory("audio");
         fs::create_directories(audio_directory_);
       }
       sst_path_ = audio_directory_ / "audio_sst.jsonl";
@@ -127,19 +150,23 @@ private:
     return output.str();
   }
 
-  bool mark_stream_seen(bool & stream)
+  // Each stream starts recording on its own first message, so the camera
+  // is never lost while ODAS warms up (that can take ~30 s). Per-stream
+  // start times in the metadata keep the files alignable.
+  bool mark_stream_seen(bool & stream, std::string & stream_started_at)
   {
     std::lock_guard<std::mutex> lock(start_mutex_);
     stream = true;
-    if (!started_ && (!require_video_ || video_seen_) &&
-      (!require_audio_ || audio_seen_) && (!require_sst_ || sst_seen_))
-    {
-      started_ = true;
-      started_at_ = iso_timestamp();
-      write_metadata("recording");
-      RCLCPP_INFO(get_logger(), "All required topics are ready; synchronized recording started");
+    if (stream_started_at.empty()) {
+      stream_started_at = iso_timestamp();
     }
-    return started_;
+    if (!started_) {
+      started_ = true;
+      started_at_ = stream_started_at;
+      write_metadata("recording");
+      RCLCPP_INFO(get_logger(), "Recording started; each stream starts with its first message");
+    }
+    return true;
   }
 
   template<typename T>
@@ -156,6 +183,70 @@ private:
 
     video_width_ = message.width;
     video_height_ = message.height;
+    start_ffmpeg();
+  }
+
+  // Frames are placed by their header stamp on a constant-rate timeline:
+  // a gap (dropped or late frames) repeats the previous image instead of
+  // shortening the video, so its duration matches real time and stays in
+  // sync with the audio. Returns how many times to write this frame.
+  uint64_t frames_due(const builtin_interfaces::msg::Time & stamp)
+  {
+    const double t = static_cast<double>(stamp.sec) + stamp.nanosec * 1e-9;
+    if (video_frames_ == 0) {
+      video_start_time_ = t;
+    }
+    const double target = std::floor((t - video_start_time_) * video_fps_ + 0.5) + 1.0;
+    if (target <= static_cast<double>(video_frames_)) {
+      return 0;  // older than the timeline position: drop it
+    }
+    const auto due = static_cast<uint64_t>(target) - video_frames_;
+    if (due > static_cast<uint64_t>(video_fps_ * 3600.0)) {
+      throw std::runtime_error("camera timestamps jumped by more than an hour");
+    }
+    return due;
+  }
+
+  void record_compressed_video(const sensor_msgs::msg::CompressedImage & message)
+  {
+    if (!mark_stream_seen(video_seen_, video_started_at_)) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(video_mutex_);
+    if (video_failed_) {
+      return;
+    }
+    try {
+      if (message.format.find("jpeg") == std::string::npos &&
+        message.format.find("jpg") == std::string::npos)
+      {
+        throw std::runtime_error("unsupported compressed format: " + message.format);
+      }
+      if (video_fd_ < 0) {
+        start_ffmpeg();
+      }
+      ++video_received_;
+      const auto due = frames_due(message.header.stamp);
+      for (uint64_t i = 0; i < due; ++i) {
+        if (!write_all(video_fd_, message.data.data(), message.data.size())) {
+          throw std::runtime_error("FFmpeg stopped accepting video frames");
+        }
+        ++video_frames_;
+      }
+      if (due > 0) {
+        last_frame_.assign(message.data.begin(), message.data.end());
+      }
+      if (due > 1) {
+        video_repeated_ += due - 1;
+      }
+    } catch (const std::exception & error) {
+      video_failed_ = true;
+      RCLCPP_ERROR(get_logger(), "Video recording stopped: %s", error.what());
+    }
+  }
+
+  void start_ffmpeg()
+  {
     int descriptors[2];
     if (pipe(descriptors) != 0) {
       throw std::runtime_error(std::string("cannot create FFmpeg pipe: ") + std::strerror(errno));
@@ -179,19 +270,28 @@ private:
       const auto size = std::to_string(video_width_) + "x" + std::to_string(video_height_);
       const auto fps = std::to_string(video_fps_);
       const auto crf = std::to_string(video_crf_);
-      execlp(
-        "ffmpeg", "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
-        "-f", "rawvideo", "-pixel_format", "bgr24", "-video_size", size.c_str(),
-        "-framerate", fps.c_str(), "-i", "pipe:0", "-an", "-c:v", "libx264",
-        "-preset", "veryfast", "-crf", crf.c_str(), "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart", video_path_.c_str(), static_cast<char *>(nullptr));
+      if (compressed_input_) {
+        execlp(
+          "ffmpeg", "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+          "-f", "image2pipe", "-c:v", "mjpeg", "-framerate", fps.c_str(), "-i", "pipe:0",
+          "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", crf.c_str(),
+          "-pix_fmt", "yuv420p", "-movflags", "+faststart", video_path_.c_str(),
+          static_cast<char *>(nullptr));
+      } else {
+        execlp(
+          "ffmpeg", "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+          "-f", "rawvideo", "-pixel_format", "bgr24", "-video_size", size.c_str(),
+          "-framerate", fps.c_str(), "-i", "pipe:0", "-an", "-c:v", "libx264",
+          "-preset", "veryfast", "-crf", crf.c_str(), "-pix_fmt", "yuv420p",
+          "-movflags", "+faststart", video_path_.c_str(), static_cast<char *>(nullptr));
+      }
       _exit(127);
     }
 
     close(descriptors[0]);
     video_fd_ = descriptors[1];
-    RCLCPP_INFO(get_logger(), "MP4 recording started: %ux%u at %.2f FPS",
-      video_width_, video_height_, video_fps_);
+    RCLCPP_INFO(get_logger(), "MP4 recording started from %s (%s) at %.2f FPS",
+      video_topic_.c_str(), compressed_input_ ? "JPEG" : "raw", video_fps_);
   }
 
   static bool write_all(int descriptor, const uint8_t * data, size_t size)
@@ -212,7 +312,7 @@ private:
 
   void record_video(const sensor_msgs::msg::Image & message)
   {
-    if (!mark_stream_seen(video_seen_)) {
+    if (!mark_stream_seen(video_seen_, video_started_at_)) {
       return;
     }
     std::lock_guard<std::mutex> lock(video_mutex_);
@@ -250,10 +350,20 @@ private:
         throw std::runtime_error("unsupported image encoding: " + message.encoding);
       }
 
-      if (!write_all(video_fd_, video_buffer_.data(), video_buffer_.size())) {
-        throw std::runtime_error("FFmpeg stopped accepting video frames");
+      ++video_received_;
+      const auto due = frames_due(message.header.stamp);
+      for (uint64_t i = 0; i < due; ++i) {
+        if (!write_all(video_fd_, video_buffer_.data(), video_buffer_.size())) {
+          throw std::runtime_error("FFmpeg stopped accepting video frames");
+        }
+        ++video_frames_;
       }
-      ++video_frames_;
+      if (due > 0) {
+        last_frame_ = video_buffer_;
+      }
+      if (due > 1) {
+        video_repeated_ += due - 1;
+      }
     } catch (const std::exception & error) {
       video_failed_ = true;
       RCLCPP_ERROR(get_logger(), "Video recording stopped: %s", error.what());
@@ -283,7 +393,7 @@ private:
 
   void record_audio(const audio_utils_msgs::msg::AudioFrame & message)
   {
-    if (!mark_stream_seen(audio_seen_)) {
+    if (!mark_stream_seen(audio_seen_, audio_started_at_)) {
       return;
     }
     std::lock_guard<std::mutex> lock(audio_mutex_);
@@ -329,7 +439,7 @@ private:
 
   void record_sst(const odas_ros_msgs::msg::OdasSstArrayStamped & message)
   {
-    if (!mark_stream_seen(sst_seen_)) {
+    if (!mark_stream_seen(sst_seen_, sst_started_at_)) {
       return;
     }
     std::lock_guard<std::mutex> lock(sst_mutex_);
@@ -366,6 +476,26 @@ private:
   void close_video()
   {
     std::lock_guard<std::mutex> lock(video_mutex_);
+    // If the camera stopped before the recording did, hold its last frame
+    // until now so video and audio cover the same span of time.
+    if (video_fd_ >= 0 && !video_failed_ && !last_frame_.empty()) {
+      const auto now = std::chrono::system_clock::now().time_since_epoch();
+      builtin_interfaces::msg::Time stamp;
+      stamp.sec = static_cast<int32_t>(std::chrono::duration_cast<std::chrono::seconds>(now).count());
+      stamp.nanosec = static_cast<uint32_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now).count() % 1000000000LL);
+      try {
+        const auto due = frames_due(stamp);
+        for (uint64_t i = 1; i < due; ++i) {
+          if (!write_all(video_fd_, last_frame_.data(), last_frame_.size())) {
+            break;
+          }
+          ++video_frames_;
+          ++video_repeated_;
+        }
+      } catch (const std::exception &) {
+      }
+    }
     if (video_fd_ >= 0) {
       close(video_fd_);
       video_fd_ = -1;
@@ -429,11 +559,13 @@ private:
       output << "{\n"
              << "  \"state\": \"" << state << "\",\n"
              << "  \"updated_at\": \"" << iso_timestamp() << "\",\n"
-             << "  \"started_at\": \"" << started_at_ << "\",\n"
+             << "  \"started_at\": \"" << video_started_at_ << "\",\n"
              << "  \"video_topic\": \"" << video_topic_ << "\",\n"
              << "  \"video_file\": \"camera.mp4\",\n"
              << "  \"video_fps\": " << video_fps_ << ",\n"
              << "  \"video_frames\": " << video_frames_.load() << ",\n"
+             << "  \"video_frames_received\": " << video_received_.load() << ",\n"
+             << "  \"video_frames_repeated\": " << video_repeated_.load() << ",\n"
              << "  \"video_ok\": " << (video_failed_ ? "false" : "true") << "\n"
              << "}\n";
     }
@@ -442,7 +574,8 @@ private:
       output << "{\n"
              << "  \"state\": \"" << state << "\",\n"
              << "  \"updated_at\": \"" << iso_timestamp() << "\",\n"
-             << "  \"started_at\": \"" << started_at_ << "\",\n"
+             << "  \"started_at\": \"" << audio_started_at_ << "\",\n"
+             << "  \"sst_started_at\": \"" << sst_started_at_ << "\",\n"
              << "  \"audio_topic\": \"" << audio_topic_ << "\",\n"
              << "  \"sst_topic\": \"" << sst_topic_ << "\",\n"
              << "  \"audio_file\": \"" << (require_audio_ ? "audio_sss.wav" : "") << "\",\n"
@@ -466,6 +599,7 @@ private:
   int video_crf_{23};
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr video_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_video_sub_;
   rclcpp::Subscription<audio_utils_msgs::msg::AudioFrame>::SharedPtr audio_sub_;
   rclcpp::Subscription<odas_ros_msgs::msg::OdasSstArrayStamped>::SharedPtr sst_sub_;
 
@@ -478,6 +612,8 @@ private:
   bool sst_seen_{false};
   bool started_{false};
   std::string started_at_;
+  std::string video_started_at_, audio_started_at_, sst_started_at_;
+  std::vector<uint8_t> last_frame_;  // last JPEG or BGR frame written, for end padding
 
   std::mutex video_mutex_;
   int video_fd_{-1};
@@ -486,6 +622,10 @@ private:
   uint32_t video_height_{0};
   std::vector<uint8_t> video_buffer_;
   std::atomic<uint64_t> video_frames_{0};
+  std::atomic<uint64_t> video_received_{0};
+  std::atomic<uint64_t> video_repeated_{0};
+  double video_start_time_{0.0};
+  bool compressed_input_{false};
   bool video_failed_{false};
 
   std::mutex audio_mutex_;

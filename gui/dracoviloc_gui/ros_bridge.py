@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import atexit
+import json
 import math
 import threading
 import time
@@ -14,10 +16,12 @@ class RosBridge:
         status_callback: Callable[[dict], None],
         log_callback: Callable[[str, str, str], None],
         frame_callback: Callable[[object], None] | None = None,
+        telemetry_callback: Callable[[str], None] | None = None,
     ) -> None:
         self.status_callback = status_callback
         self.log_callback = log_callback
         self.frame_callback = frame_callback
+        self.telemetry_callback = telemetry_callback
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._node = None
@@ -37,18 +41,18 @@ class RosBridge:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        # Any exit path must shut the executor down: a spinning rclpy
+        # executor during interpreter teardown aborts the process.
+        atexit.register(self.stop)
 
     def _run(self) -> None:
         try:
             import rclpy
             from controller_manager_msgs.srv import ListControllers
-            from audio_utils_msgs.msg import AudioFrame
             from geometry_msgs.msg import Vector3Stamped
-            from odas_ros_msgs.msg import OdasSstArrayStamped
-            from sensor_msgs.msg import Image, JointState
+            from sensor_msgs.msg import CameraInfo, CompressedImage
             from std_msgs.msg import String
             from std_srvs.srv import SetBool, Trigger
-            from vision_msgs.msg import Detection2DArray
         except ImportError as exc:
             self.log_callback("ros", "error", f"ROS Python dependency unavailable: {exc}")
             return
@@ -61,40 +65,10 @@ class RosBridge:
         def seen(topic: str):
             def callback(message):
                 self._last_seen[topic] = time.monotonic()
-                if topic == "/joint_states":
-                    self._joint_count = len(message.name)
-                    home = {
-                        "joint1": math.pi / 2, "joint2": -math.pi / 2,
-                        "joint3": -math.pi / 2, "joint4": 0.0,
-                        "joint5": math.pi / 2, "joint6": 0.0,
-                    }
-                    observed = dict(zip(message.name, message.position))
-                    single = all(name in observed for name in home)
-                    left = all(f"left_{name}" in observed for name in home)
-                    right = all(f"right_{name}" in observed for name in home)
-                    def matches(prefix: str = "") -> bool:
-                        return all(abs(math.remainder(observed[prefix + name] - target, 2 * math.pi)) <= 0.035
-                                   for name, target in home.items())
-                    self._at_home = (single and matches()) or (left and right and matches("left_") and matches("right_"))
-                    if left or right:
-                        self._arms = {
-                            "left": {"joint_count": sum(name.startswith("left_joint") for name in message.name),
-                                     "at_home": left and matches("left_")},
-                            "right": {"joint_count": sum(name.startswith("right_joint") for name in message.name),
-                                      "at_home": right and matches("right_")},
-                        }
-                    else:
-                        self._arms = {"primary": {
-                            "joint_count": sum(name in home for name in message.name),
-                            "at_home": single and matches(),
-                        }}
-                elif topic == "/tracking/events":
+                if topic == "/tracking/events":
                     self._tracking_event = message.data
             return callback
 
-        self._node.create_subscription(
-            JointState, "/joint_states", seen("/joint_states"),
-            rclpy.qos.qos_profile_sensor_data)
         self._node.create_subscription(String, "/tracking/events", seen("/tracking/events"), 20)
         self._node.create_subscription(String, "/diagnostics/events", seen("/diagnostics/events"), 20)
         def direction_seen(topic: str):
@@ -106,65 +80,87 @@ class RosBridge:
             return callback
         for topic in ("/yolo/direction", "/mobilenetv2/direction", "/ast/direction", "/gre/direction", "/ekf/direction"):
             self._node.create_subscription(Vector3Stamped, topic, direction_seen(topic), 10)
-        self._node.create_subscription(AudioFrame, "/sss", seen("/sss"), 10)
-        self._node.create_subscription(OdasSstArrayStamped, "/sst", seen("/sst"), 10)
-        self._node.create_subscription(Detection2DArray, "/detections_output", seen("/detections_output"), 10)
+        # The camera publishes one small CameraInfo per frame: liveness of the
+        # raw stream without moving pixels through Python (kept as "/image").
+        def camera_info(_message):
+            self._last_seen["/image"] = time.monotonic()
+        self._node.create_subscription(
+            CameraInfo, "/camera_info", camera_info, rclpy.qos.qos_profile_sensor_data)
         if self.frame_callback is not None:
-            def frame(message):
-                self._last_seen["/image"] = time.monotonic()
-                if message.encoding in {"rgb8", "bgr8"}:
-                    self.frame_callback({
-                        "data": bytes(message.data), "width": message.width,
-                        "height": message.height, "step": message.step,
-                        "encoding": message.encoding,
-                    })
-            self._node.create_subscription(
-                Image, "/image", frame, rclpy.qos.qos_profile_sensor_data)
+            # JPEG previews from dracoviloc_monitor/preview_node; Qt decodes them.
+            def preview(stream: str):
+                def callback(message):
+                    self._last_seen[f"/dracoviloc/preview/{stream}"] = time.monotonic()
+                    self.frame_callback({"stream": stream, "encoding": "jpeg",
+                                         "data": bytes(message.data)})
+                return callback
+            for stream in ("raw", "overlay"):
+                self._node.create_subscription(
+                    CompressedImage, f"/dracoviloc/preview/{stream}/compressed",
+                    preview(stream), rclpy.qos.QoSProfile(
+                        depth=2, reliability=rclpy.qos.ReliabilityPolicy.RELIABLE))
+        # High-rate topics (joint states ~100 Hz, ODAS tracks ~85 Hz,
+        # detections) are summarised by the C++ telemetry node; the GUI only
+        # parses its 10 Hz snapshot.
+        def telemetry(message):
+            now = time.monotonic()
+            self._last_seen["/dracoviloc/telemetry"] = now
+            try:
+                self._apply_telemetry(json.loads(message.data), now)
+            except (ValueError, KeyError, TypeError) as exc:
+                self.log_callback("ros", "warning", f"Bad telemetry snapshot: {exc}")
+            if self.telemetry_callback is not None:
+                self.telemetry_callback(message.data)
+        self._node.create_subscription(String, "/dracoviloc/telemetry", telemetry, 10)
 
         self._home_client = self._node.create_client(Trigger, "/demo/home")
         self._tracking_client = self._node.create_client(SetBool, "/demo/tracking")
         self._controllers_client = self._node.create_client(ListControllers, "/controller_manager/list_controllers")
-        last_status = 0.0
-        last_controller_query = 0.0
-        try:
-            while rclpy.ok() and not self._stop.is_set():
-                self._executor.spin_once(timeout_sec=0.1)
-                now = time.monotonic()
-                if (now - last_controller_query >= 1.0 and
-                        self._controllers_client.service_is_ready() and
-                        not self._controller_query_pending):
-                    self._controller_query_pending = True
-                    future = self._controllers_client.call_async(ListControllers.Request())
-                    def controllers_complete(done):
-                        try:
-                            response = done.result()
-                            self._controllers = {
-                                controller.name: controller.state
-                                for controller in response.controller
-                            }
-                        except Exception as exc:
-                            self.log_callback("ros", "error", f"Controller query failed: {exc}")
-                        finally:
-                            self._controller_query_pending = False
-                    future.add_done_callback(controllers_complete)
-                    last_controller_query = now
-                if now - last_status >= 0.5:
-                    freshness = {
-                        topic: max(0.0, now - stamp) for topic, stamp in self._last_seen.items()
+        def query_controllers():
+            if (not self._controllers_client.service_is_ready() or
+                    self._controller_query_pending):
+                return
+            self._controller_query_pending = True
+            future = self._controllers_client.call_async(ListControllers.Request())
+            def controllers_complete(done):
+                try:
+                    response = done.result()
+                    self._controllers = {
+                        controller.name: controller.state
+                        for controller in response.controller
                     }
-                    self.status_callback({
-                        "freshness": freshness,
-                        "joint_count": self._joint_count,
-                        "arms": self._arms,
-                        "dual_arm_detected": "left" in self._arms and "right" in self._arms,
-                        "at_home": self._at_home,
-                        "tracking_event": self._tracking_event,
-                        "home_service": self._home_client.service_is_ready(),
-                        "tracking_service": self._tracking_client.service_is_ready(),
-                        "controllers": self._controllers,
-                        "directions": self._directions,
-                    })
-                    last_status = now
+                except Exception as exc:
+                    self.log_callback("ros", "error", f"Controller query failed: {exc}")
+                finally:
+                    self._controller_query_pending = False
+            future.add_done_callback(controllers_complete)
+
+        def publish_status():
+            now = time.monotonic()
+            freshness = {
+                topic: max(0.0, now - stamp) for topic, stamp in self._last_seen.items()
+            }
+            self.status_callback({
+                "freshness": freshness,
+                "joint_count": self._joint_count,
+                "arms": self._arms,
+                "dual_arm_detected": "left" in self._arms and "right" in self._arms,
+                "at_home": self._at_home,
+                "tracking_event": self._tracking_event,
+                "home_service": self._home_client.service_is_ready(),
+                "tracking_service": self._tracking_client.service_is_ready(),
+                "controllers": self._controllers,
+                "directions": self._directions,
+            })
+
+        self._node.create_timer(1.0, query_controllers)
+        self._node.create_timer(0.5, publish_status)
+        try:
+            # Spin continuously until stop() shuts the executor down. A
+            # spin_once loop handles one message per call and starved the
+            # video previews behind 100 Hz joint states.
+            if not self._stop.is_set():
+                self._executor.spin()
         except Exception as exc:
             # ROS installs process signal handlers; SIGINT/SIGTERM can
             # invalidate the context between the loop check and an API call.
@@ -182,6 +178,40 @@ class RosBridge:
             except Exception:
                 # A process signal may already have shut down the default context.
                 pass
+
+    HOME = {"joint1": math.pi / 2, "joint2": -math.pi / 2, "joint3": -math.pi / 2,
+            "joint4": 0.0, "joint5": math.pi / 2, "joint6": 0.0}
+
+    def _apply_telemetry(self, snapshot: dict, now: float) -> None:
+        """Arm and liveness status from a telemetry snapshot."""
+        joints = snapshot.get("joints", {})
+        observed = {item["name"]: item["position"] for item in joints.get("items", [])}
+        if joints.get("rate_hz", 0) > 0 and observed:
+            self._last_seen["/joint_states"] = now
+            self._joint_count = len(observed)
+            single = all(name in observed for name in self.HOME)
+            left = all(f"left_{name}" in observed for name in self.HOME)
+            right = all(f"right_{name}" in observed for name in self.HOME)
+
+            def matches(prefix: str = "") -> bool:
+                return all(abs(math.remainder(observed[prefix + name] - target, 2 * math.pi)) <= 0.035
+                           for name, target in self.HOME.items())
+            self._at_home = (single and matches()) or (left and right and matches("left_") and matches("right_"))
+            if left or right:
+                self._arms = {
+                    "left": {"joint_count": sum(name.startswith("left_joint") for name in observed),
+                             "at_home": left and matches("left_")},
+                    "right": {"joint_count": sum(name.startswith("right_joint") for name in observed),
+                              "at_home": right and matches("right_")},
+                }
+            else:
+                self._arms = {"primary": {"joint_count": sum(name in self.HOME for name in observed),
+                                          "at_home": single and matches()}}
+        if snapshot.get("audio", {}).get("rate_hz", 0) > 0:
+            self._last_seen["/sst"] = now
+        yolo_age = snapshot.get("yolo", {}).get("age_s")
+        if yolo_age is not None and yolo_age < 2.0:
+            self._last_seen["/detections_output"] = now - yolo_age
 
     def _service(self, client, request, callback: Callable[[bool, str], None]) -> None:
         if client is None or not client.service_is_ready():
@@ -215,6 +245,8 @@ class RosBridge:
 
     def stop(self) -> None:
         self._stop.set()
+        if self._executor is not None:
+            self._executor.shutdown(timeout_sec=1.0)
         if self._thread:
             self._thread.join(timeout=2.0)
 

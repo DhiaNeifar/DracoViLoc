@@ -4,6 +4,8 @@ build/
 install/
 log/
 runs/
+# Control-center activity outside runs (gui/dracoviloc_gui/session_log.py)
+logs/
 # Exported project Docker images (Setup & builds > Save image)
 images/
 

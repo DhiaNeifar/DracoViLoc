@@ -112,8 +112,31 @@ def main() -> int:
     }
     recorder.marker(f"start {args.name}: {' '.join(command)}")
 
+    # Install the handlers before the command exists: a stop request that
+    # arrives during start-up is held and forwarded as soon as it does.
+    child = {"pid": None, "pending": []}
+
+    def forward(signum, _frame):
+        if status["stop_requested_at"] is None:
+            status["stop_requested_at"] = timestamp()
+        if child["pid"] is None:
+            child["pending"].append(signum)
+            return
+        recorder.marker(f"received {signal.Signals(signum).name}; forwarding to the command")
+        try:
+            # pty.fork made the child a session leader, so its pid is its
+            # process group: this matches Ctrl+C in a terminal.
+            os.killpg(child["pid"], signum)
+        except ProcessLookupError:
+            pass
+
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, forward)
+
     pid, master = pty.fork()
     if pid == 0:
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(signum, signal.SIG_DFL)
         try:
             os.execvp(command[0], command)
         except OSError as error:
@@ -124,22 +147,9 @@ def main() -> int:
                 struct.pack("HHHH", TERMINAL_ROWS, TERMINAL_COLUMNS, 0, 0))
     status["pid"] = pid
     write_json_atomic(args.status, status)
-
-    def forward(signum, _frame):
-        if status["stop_requested_at"] is None:
-            status["stop_requested_at"] = timestamp()
-            write_json_atomic(args.status, status)
-        recorder.marker(f"received {signal.Signals(signum).name}; forwarding to the command")
-        try:
-            # pty.fork made the child a session leader, so its pid is its
-            # process group: this matches Ctrl+C in a terminal.
-            os.killpg(pid, signum)
-        except ProcessLookupError:
-            pass
-
-    signal.signal(signal.SIGINT, forward)
-    signal.signal(signal.SIGTERM, forward)
-    signal.signal(signal.SIGHUP, forward)
+    child["pid"] = pid
+    for signum in child["pending"]:
+        forward(signum, None)
 
     while True:
         try:

@@ -128,6 +128,17 @@ class SystemdUser:
                 pid = 0
             return active, pid
 
+    def unit_processes(self, unit: str) -> list[int]:
+        """PIDs currently in the unit's cgroup (empty once it has stopped)."""
+        with self._lock:
+            try:
+                processes = self._manager.GetUnitProcesses(unit)
+            except dbus.DBusException as error:
+                if "NoSuchUnit" in error.get_dbus_name():
+                    return []
+                raise
+        return [int(entry[1]) for entry in processes]
+
     def active_units(self) -> list[str]:
         with self._lock:
             units = self._manager.ListUnitsByPatterns(

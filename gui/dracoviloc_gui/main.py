@@ -51,6 +51,7 @@ def main() -> int:
         frame_revision["value"] += 1
         for window in engine.rootObjects():
             window.setProperty("cameraRevision", frame_revision["value"])
+            window.setProperty("cameraStreams", sorted(camera.images))
     controller.cameraFrame.connect(update_camera)
     def quit_application():
         closing["value"] = True

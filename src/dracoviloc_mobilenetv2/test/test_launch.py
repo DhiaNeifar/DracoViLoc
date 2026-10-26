@@ -19,7 +19,7 @@ def configure(**changes):
                   recording_enabled='false', sss_channels_recording='false',
                   mobilenetv2_enabled='false', mobilenetv2_ekf_enabled='false',
                   mobilenetv2_engine_path='', mobilenetv2_venv_python='',
-                  first_arrival_mode='off',
+                  first_arrival_mode='off', monitor_enabled='false',
                   diagnostics_enabled='false',
                   odas_diagnostics_log_path='', odas_diagnostics_interval_s='10.0',
                   direction_marker_length='1.0', direction_marker_timeout='1.25')
@@ -75,7 +75,7 @@ def test_classifier_launch_defaults_do_not_leak(override):
         mobilenetv2_enabled='true',
         mobilenetv2_ekf_enabled='false', mobilenetv2_engine_path=override,
         mobilenetv2_venv_python='', ast_threshold='0.20', mobilenetv2_threshold='0.75',
-        first_arrival_mode='off', uma16_card='0',
+        first_arrival_mode='off', uma16_card='0', monitor_enabled='false',
         diagnostics_enabled='false',
         odas_diagnostics_log_path='', odas_diagnostics_interval_s='10.0',
         first_arrival_min_confidence='0.70', first_arrival_onset_snr_db='10.0',

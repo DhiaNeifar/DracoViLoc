@@ -49,6 +49,21 @@ def stop(name: str = YOLO_CONTAINER, timeout_s: int = 10) -> bool:
     return True
 
 
+def kill(name: str) -> None:
+    try:
+        _client().containers.get(name).kill()
+    except NotFound:
+        pass
+
+
+def running_containers() -> list[dict]:
+    # The image name is in the list response; container.image would cost
+    # one extra API call per container.
+    return [{"name": container.name, "status": container.status,
+             "image": container.attrs.get("Config", {}).get("Image", "")}
+            for container in _client().containers.list()]
+
+
 def image_exists(image: str) -> bool:
     try:
         _client().images.get(image)
@@ -58,4 +73,4 @@ def image_exists(image: str) -> bool:
 
 
 __all__ = ["DockerException", "YOLO_CONTAINER", "container_state", "image_exists",
-           "remove_if_stopped", "stop"]
+           "kill", "remove_if_stopped", "running_containers", "stop"]

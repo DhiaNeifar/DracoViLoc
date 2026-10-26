@@ -29,7 +29,7 @@ def test_ekf_requires_fusion_and_source():
         mobilenetv2_ekf_enabled=False, fusion_enabled=False,
         tracking_mode="ekf"))
     assert "EKF tracking requires fusion." in errors
-    assert "EKF tracking requires YOLO or MobileNetV2 EKF input." in errors
+    assert "Following the fused direction needs YOLO or MobileNetV2 turned on." in errors
 
 
 def test_mobile_ekf_dependency_chain():

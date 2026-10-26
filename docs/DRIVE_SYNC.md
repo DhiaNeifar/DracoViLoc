@@ -1,10 +1,14 @@
 # Syncing recordings to Google Drive
 
-`runs/video/<timestamp>` and `runs/audio/<timestamp>` are pushed to a personal
-Google Drive folder by a background systemd timer, independent of ROS and of
-whether the machine has internet access at recording time. A run only
-uploads once its `metadata.json` reports `"state": "complete"`, so an
-in-progress recording is never uploaded half-written. The timer re-runs every
+The recordings of every run, `runs/<YYYY-MM-DD_HH-MM-SS>/video/` and
+`runs/<YYYY-MM-DD_HH-MM-SS>/audio/`, are pushed to a personal Google Drive
+folder (`DracoViLoc/runs/<run>/video|audio`) by a background systemd timer,
+independent of ROS and of whether the machine has internet access at
+recording time. Logs, telemetry and ROS bags in the run folder stay local.
+Runs in the earlier `runs/video/<timestamp>` layout are still uploaded. A
+recording only uploads once its `metadata.json` reports
+`"state": "complete"`, so an in-progress recording is never uploaded
+half-written. The timer re-runs every
 five minutes and `rclone copy` only transfers files that differ from the
 remote, so:
 

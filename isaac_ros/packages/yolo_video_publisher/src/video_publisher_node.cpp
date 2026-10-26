@@ -9,10 +9,12 @@
 #include <stdexcept>
 #include <string>
 
+#include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
+#include <sensor_msgs/msg/compressed_image.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
 class VideoPublisherNode : public rclcpp::Node
@@ -28,6 +30,12 @@ public:
     const auto camera_info_topic =
       declare_parameter<std::string>("camera_info_topic", "/camera_info");
     const auto horizontal_fov_deg = declare_parameter<double>("horizontal_fov_deg", 100.0);
+    // JPEG copy of every frame (same stamp) for monitoring: ~40 KB instead of
+    // ~1 MB over DDS. Encoded only while someone subscribes.
+    jpeg_quality_ = declare_parameter<int>("compressed_jpeg_quality", 95);
+    if (jpeg_quality_ < 10 || jpeg_quality_ > 100) {
+      throw std::invalid_argument("compressed_jpeg_quality must be between 10 and 100");
+    }
     if (!(horizontal_fov_deg > 0.0 && horizontal_fov_deg < 180.0)) {
       throw std::invalid_argument("horizontal_fov_deg must be between 0 and 180");
     }
@@ -58,6 +66,8 @@ public:
     image_publisher_ = create_publisher<sensor_msgs::msg::Image>(image_topic, qos);
     camera_info_publisher_ =
       create_publisher<sensor_msgs::msg::CameraInfo>(camera_info_topic, qos);
+    compressed_publisher_ = create_publisher<sensor_msgs::msg::CompressedImage>(
+      image_topic + "/compressed", rclcpp::QoS(rclcpp::KeepLast(5)).reliable());
 
     const auto period = std::chrono::duration<double>(1.0 / publish_rate_);
     timer_ = create_wall_timer(
@@ -123,6 +133,13 @@ private:
       0.0, 0.0, 1.0, 0.0};
 
     camera_info_publisher_->publish(std::move(camera_info));
+    if (compressed_publisher_->get_subscription_count() > 0) {
+      auto compressed = std::make_unique<sensor_msgs::msg::CompressedImage>();
+      compressed->header = image->header;
+      compressed->format = "jpeg";
+      cv::imencode(".jpg", bgr_frame, compressed->data, {cv::IMWRITE_JPEG_QUALITY, jpeg_quality_});
+      compressed_publisher_->publish(std::move(compressed));
+    }
     image_publisher_->publish(std::move(image));
   }
 
@@ -133,6 +150,8 @@ private:
   double focal_length_px_{0.0};
   bool loop_{false};
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_publisher_;
+  int jpeg_quality_{95};
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_publisher_;
   rclcpp::TimerBase::SharedPtr timer_;
 };

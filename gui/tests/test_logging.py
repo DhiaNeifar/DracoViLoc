@@ -37,9 +37,10 @@ def test_wrapper_records_terminal_output_and_exit_code(tmp_path):
 def test_wrapper_forwards_ctrl_c_and_keeps_logging(tmp_path):
     process, log, status = run_wrapped(
         tmp_path, 'trap "echo cleaning up; exit 0" INT; echo ready; sleep 30 & wait')
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 20
     while "ready" not in (log.read_text() if log.exists() else "") and time.monotonic() < deadline:
         time.sleep(0.05)
+    assert "ready" in log.read_text(), "command did not start"
     process.send_signal(signal.SIGINT)
     assert process.wait(10) == 0
     text = log.read_text()
@@ -47,17 +48,37 @@ def test_wrapper_forwards_ctrl_c_and_keeps_logging(tmp_path):
     assert json.loads(status.read_text())["stop_requested_at"]
 
 
-def test_session_log_is_durable_jsonl(tmp_path):
-    session = SessionLog(tmp_path / "runs", tmp_path)
+def test_ctrl_c_right_after_start_reaches_the_command(tmp_path):
+    process, log, status = run_wrapped(tmp_path, 'sleep 30')
+    deadline = time.monotonic() + 20
+    while not status.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    process.send_signal(signal.SIGINT)  # as soon as the command exists
+    assert process.wait(20) == 130  # sleep was interrupted by the forwarded SIGINT
+    assert json.loads(status.read_text())["signal"] == "SIGINT"
+
+
+def test_runs_are_self_contained_and_logs_stay_outside(tmp_path):
+    session = SessionLog(tmp_path / "logs", tmp_path)
+    session.event("action", "operator", "info", "idle click")
+    job_log, _ = session.process_log_paths("job-host_build")
+    assert job_log.parent == tmp_path / "logs/jobs"
+
+    run = session.begin_run(tmp_path / "runs")
+    assert run.parent == tmp_path / "runs" and len(run.name) == len("2026-10-26_10-00-00")
+    session.record_run({"name": "Mock"}, {"host": ["ros2", "launch"]})
     session.event("action", "operator", "info", "startRun", {"args": [1]})
-    log, status = session.process_log_paths("host")
-    assert log.parent == session.directory / "processes"
+    host_log, _ = session.process_log_paths("host")
+    assert host_log == run / "processes/host.log"
+    session.end_run("stopped")
     session.close()
-    rows = [json.loads(line) for line in (session.directory / "events.jsonl").read_text().splitlines()]
-    assert [row["message"] for row in rows] == ["Session started", "startRun", "Session ended"]
-    assert rows[1]["data"] == {"args": [1]}
-    metadata = json.loads((session.directory / "session.json").read_text())
-    assert metadata["ended_at"] and metadata["machine"]
+
+    run_events = [json.loads(line)["message"] for line in (run / "events.jsonl").read_text().splitlines()]
+    assert "startRun" in run_events and "idle click" not in run_events
+    daily = next((tmp_path / "logs").glob("*.jsonl")).read_text()
+    assert "idle click" in daily and "startRun" in daily and "Session ended" in daily
+    record = json.loads((run / "run.json").read_text())
+    assert record["outcome"] == "stopped" and record["ended_at"] and record["profile"]["name"] == "Mock"
 
 
 def test_ansi_conversion_and_severity():
@@ -82,7 +103,7 @@ def _systemd_user_available():
 @pytest.mark.skipif(not _systemd_user_available(), reason="needs a systemd user session")
 def test_unit_supervisor_runs_logs_and_stops(tmp_path):
     from dracoviloc_gui.units import UnitSupervisor
-    session = SessionLog(tmp_path / "runs", tmp_path)
+    session = SessionLog(tmp_path / "logs", tmp_path)
     lines, exits = [], []
     supervisor = UnitSupervisor(session, lambda name, rows: lines.extend(rows),
                                 lambda name, code: exits.append((name, code)), lambda: None,
@@ -101,5 +122,5 @@ def test_unit_supervisor_runs_logs_and_stops(tmp_path):
     supervisor.close()
     assert exits == [(name, 0)]
     assert any("bye" in line for line in lines)
-    events = (session.directory / "events.jsonl").read_text()
+    events = next(session.directory.glob("*.jsonl")).read_text()
     assert "Started dracoviloc-" in events and "exited with code 0" in events

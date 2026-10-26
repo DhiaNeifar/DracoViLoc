@@ -130,3 +130,16 @@ def test_stale_sst_resets_state():
 def test_nonfinite_options_rejected(option):
     with pytest.raises(SystemExit):
         parse_args(['--engine-path', 'unused', option, 'nan'])
+
+
+def test_every_window_is_reported_on_diagnostics():
+    node = make_node()
+    node.windows = []
+    node.diagnostics = SimpleNamespace(publish=node.windows.append)
+    feed(node, 190, track=7)
+    assert node.windows, 'each inference window must be reported'
+    window = node.windows[-1]
+    assert window.channel == 0 and window.track_id == 7
+    assert abs(window.probability - 0.9) < 1e-6 and window.vote
+    assert window.decision and window.actionable and window.inference_ms >= 0.0
+    assert len(node.windows) == node.windows_done

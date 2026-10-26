@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <deque>
 #include <memory>
 #include <stdexcept>
@@ -7,6 +8,7 @@
 #include <Eigen/Dense>
 #include "dracoviloc_ekf/bearing_continuity_gate.hpp"
 #include "dracoviloc_ekf/direct_path_gate.hpp"
+#include "dracoviloc_msgs/msg/ekf_update.hpp"
 #include "geometry_msgs/msg/vector3_stamped.hpp"
 #include "odas_ros_msgs/msg/odas_ssl_array_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -67,6 +69,7 @@ public:
     }
     pub_ = create_publisher<Msg>("/ekf/direction", 10);
     legacy_pub_ = create_publisher<Msg>("/ekf_fused_target_pose", 10);
+    diagnostics_pub_ = create_publisher<dracoviloc_msgs::msg::EkfUpdate>("/ekf/diagnostics", 50);
     add_source("yolo_enabled", "/yolo/direction", "yolo_measurement_noise", false, yolo_);
     add_source(
       "mobilenetv2_ekf_enabled", "/mobilenetv2/direction",
@@ -123,6 +126,25 @@ private:
     z.normalize();
     const double t = rclcpp::Time(msg.header.stamp).seconds();
     if (!std::isfinite(t)) return;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    // Reports every outcome on /ekf/diagnostics; never affects the filter.
+    const auto report = [&](const char * decision, double nis, double innovation_deg) {
+      dracoviloc_msgs::msg::EkfUpdate d;
+      d.header.stamp = msg.header.stamp;
+      d.header.frame_id = frame_;
+      d.source = source;
+      d.decision = decision;
+      d.nis = nis;
+      d.nis_gate = gate_;
+      d.innovation_deg = innovation_deg;
+      d.measurement_noise = measurement_noise;
+      d.processing_delay_s = now().seconds() - t;
+      d.measurement.x = z.x(); d.measurement.y = z.y(); d.measurement.z = z.z();
+      const Eigen::Vector3d estimate = x_.head<3>().norm() > 1e-9
+        ? Eigen::Vector3d(x_.head<3>().normalized()) : Eigen::Vector3d::Zero();
+      d.estimate.x = estimate.x(); d.estimate.y = estimate.y(); d.estimate.z = estimate.z();
+      diagnostics_pub_->publish(d);
+    };
     if (acoustic && direct_path_mode_ != "off") {
       const auto direct_result = direct_path_gate_->evaluate(z, t);
       if (!direct_result.allowed()) {
@@ -132,6 +154,7 @@ private:
           direct_path_mode_ == "enforce" ? "rejected" : "would reject",
           source, direct_result.anchor_residual_deg, direct_result.evidence_residual_deg);
         if (direct_path_mode_ == "enforce") {
+          report("rejected_first_arrival", nan, nan);
           return;
         }
       }
@@ -148,6 +171,7 @@ private:
         direct_path_gate_->mark_anchor(z, t);
       }
       publish(msg.header.stamp);
+      report("initialized", nan, 0.0);
       return;
     }
     predict(t);
@@ -156,6 +180,8 @@ private:
     const Eigen::Vector3d innovation = z - H*x_;
     const Eigen::Matrix3d S = H*P_*H.transpose()+R;
     const double nis = innovation.transpose()*S.inverse()*innovation;
+    const double innovation_deg = std::acos(std::clamp(
+      z.dot(x_.head<3>().normalized()), -1.0, 1.0)) * 180.0 / M_PI;
     if (acoustic && bearing_gate_->enabled()) {
       const bool visual_is_fresh = have_visual_update_ &&
         std::abs(t - last_visual_update_t_) <= bearing_gate_config_.reacquire_timeout_s;
@@ -168,6 +194,7 @@ private:
           "nis=%.2f pending=%d%s",
           source, result.residual_deg, result.allowed_deg, nis, result.pending_count,
           visual_is_fresh ? " (visual anchor active)" : "");
+        report("rejected_bearing_gate", nis, innovation_deg);
         return;
       }
       if (result.decision == dracoviloc_ekf::BearingGateDecision::Reacquire) {
@@ -184,10 +211,15 @@ private:
           source, result.residual_deg,
           result.after_source_gap ? " after source loss" : " after confirmation");
         publish(msg.header.stamp);
+        report("reacquired", nis, innovation_deg);
         return;
       }
     }
-    if (nis > gate_) { RCLCPP_DEBUG(get_logger(), "rejected %s measurement", source); return; }
+    if (nis > gate_) {
+      RCLCPP_DEBUG(get_logger(), "rejected %s measurement", source);
+      report("rejected_nis", nis, innovation_deg);
+      return;
+    }
     const Eigen::Matrix<double,6,3> K = P_*H.transpose()*S.inverse();
     x_ += K*innovation; P_ = (Eigen::Matrix<double,6,6>::Identity()-K*H)*P_;
     x_.head<3>().normalize();
@@ -199,6 +231,7 @@ private:
       direct_path_gate_->mark_anchor(z, t);
     }
     publish(msg.header.stamp);
+    report("accepted", nis, innovation_deg);
   }
   void publish(const builtin_interfaces::msg::Time & stamp) {
     output_history_.push_back(x_.head<3>().normalized());
@@ -229,6 +262,7 @@ private:
   std::deque<Eigen::Vector3d> output_history_;
   Eigen::Matrix<double,6,1> x_; Eigen::Matrix<double,6,6> P_;
   rclcpp::Publisher<Msg>::SharedPtr pub_, legacy_pub_; Sub yolo_,mobilenetv2_;
+  rclcpp::Publisher<dracoviloc_msgs::msg::EkfUpdate>::SharedPtr diagnostics_pub_;
   rclcpp::Subscription<odas_ros_msgs::msg::OdasSslArrayStamped>::SharedPtr first_arrival_sub_;
 };
 int main(int argc,char **argv){rclcpp::init(argc,argv);rclcpp::spin(std::make_shared<DirectionEkf>());rclcpp::shutdown();}

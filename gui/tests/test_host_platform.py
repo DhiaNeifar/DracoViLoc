@@ -24,10 +24,11 @@ def test_unknown_architecture_has_no_image():
     assert resolve_yolo_image("auto", "riscv64", lambda image: True) == ""
 
 
-def test_agent_copy_is_identical():
-    gui_copy = ROOT / "gui/dracoviloc_gui/host_platform.py"
-    agent_copy = ROOT / "remote_agent/dracoviloc_agent/host_platform.py"
-    assert gui_copy.read_text() == agent_copy.read_text()
+def test_agent_copies_are_identical():
+    for name in ("host_platform.py", "recordings.py"):
+        gui_copy = ROOT / "gui/dracoviloc_gui" / name
+        agent_copy = ROOT / "remote_agent/dracoviloc_agent" / name
+        assert gui_copy.read_text() == agent_copy.read_text(), name
 
 
 def test_project_image_version_tracks_the_dockerfile(tmp_path):

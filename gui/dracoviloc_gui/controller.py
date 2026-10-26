@@ -13,7 +13,7 @@ from PySide6.QtCore import QObject, Property, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtCore import QUrl
 
-from . import docker_control, jobs
+from . import docker_control, jobs, process_control
 from .commands import runtime_environment, sourced_host_command, yolo_docker_command
 from .models import AppState, LogEvent, RunProfile
 from .preflight import blocking_failures, run_preflight
@@ -49,10 +49,13 @@ class AppController(QObject):
     logAdded = Signal(str)
     recordingsChanged = Signal(str)
     cameraFrame = Signal(object)
+    telemetryUpdated = Signal(str)
     quitReady = Signal()
     remoteChanged = Signal()
     processesChanged = Signal()
     setupChanged = Signal()
+    processListChanged = Signal()
+    robotCheckChanged = Signal()
     _jobQueueReady = Signal()
 
     def __init__(self, project_root: Path) -> None:
@@ -69,7 +72,7 @@ class AppController(QObject):
         self._status: dict = {}
         self._remote_state: dict = {"state": "disconnected", "has_control": False}
         self._shutting_down_for_quit = False
-        self.session = SessionLog(Path(self._profile.recording_root).expanduser(), project_root)
+        self.session = SessionLog(project_root / "logs", project_root)
         self._last_logged_message = ""
         self.messageChanged.connect(self._log_message)
         self.terminals = TerminalHub(self)
@@ -85,6 +88,9 @@ class AppController(QObject):
                              "Motion state is unknown: use STOP MOTION if unsure.")
             self.session.event("state", "gui", "warning", self._message,
                                {"state": self._state.value})
+        self._operator_stopped: set[str] = set()
+        self._process_list: dict = {"items": [], "report": [], "scanning": False}
+        self._robot_check: dict = {}
         self._setup: dict[str, dict] = {}
         self._models: dict = {"models": [], "gpu": "", "auto": "", "auto_error": ""}
         self._job_queue: list[str] = []
@@ -94,7 +100,8 @@ class AppController(QObject):
         # Jobs are started on the GUI thread even when a worker thread decides
         # the next one should run (terminal models belong to this thread).
         self._jobQueueReady.connect(self._start_next_job, Qt.QueuedConnection)
-        self.ros = RosBridge(self._ros_status, self._log, self._camera_frame)
+        self.ros = RosBridge(self._ros_status, self._log, self._camera_frame,
+                             self.telemetryUpdated.emit)
         self.ros.start()
         self.remote = RemoteJetsonClient(
             self._remote_connection_state, self._remote_event, self._log)
@@ -139,6 +146,10 @@ class AppController(QObject):
     def sessionLogDirectory(self) -> str:
         return str(self.session.directory)
 
+    @Property(str, notify=stateChanged)
+    def runDirectory(self) -> str:
+        return str(self.session.run_directory or "")
+
     @Slot(str, result=QObject)
     def terminalModel(self, name: str) -> TerminalModel:
         return self.terminals.model(name)
@@ -159,9 +170,12 @@ class AppController(QObject):
     def jobActive(self) -> bool:
         return bool(self._current_job)
 
+    TOOL_UNITS = {"rviz"}  # helpers that may run with or without a run
+
     def _run_processes(self) -> list[str]:
-        """Running subsystem units; setup jobs are not part of a run."""
-        return [name for name in self.processes.running() if not name.startswith("job-")]
+        """Running subsystem units; setup jobs and tools are not part of a run."""
+        return [name for name in self.processes.running()
+                if not name.startswith("job-") and name not in self.TOOL_UNITS]
 
     @Property(bool, notify=stateChanged)
     def runActive(self) -> bool:
@@ -212,7 +226,13 @@ class AppController(QObject):
                          "info" if code == 0 else "error", f"Process exited with code {code}")
         self.logAdded.emit(json.dumps(event.to_dict()))
         if name == "host" and self._state not in {AppState.SHUTTING_DOWN, AppState.IDLE}:
-            self._set_state(AppState.FAULT, "The host launch exited unexpectedly.")
+            reason = ("The host stack was stopped from the Processes page."
+                      if name in self._operator_stopped else "The host launch exited unexpectedly.")
+            self._set_state(AppState.FAULT, reason)
+        self._operator_stopped.discard(name)
+        if not self._run_processes() and self.session.run_directory is not None and \
+                self._state not in {AppState.SHUTTING_DOWN, AppState.STARTING_YOLO, AppState.STARTING_HOST}:
+            self.session.end_run(f"{name} exited (code {code})")
 
     def _ros_status(self, status: dict) -> None:
         self._status = status
@@ -253,6 +273,7 @@ class AppController(QObject):
         elif event == "camera":
             frame = dict(data)
             frame["data"] = body
+            frame["stream"] = "overlay"  # the agent streams the annotated image
             self.cameraFrame.emit(frame)
 
     def _is_remote(self) -> bool:
@@ -373,14 +394,22 @@ class AppController(QObject):
                 return
             previous = getattr(self._profile, name)
             setattr(self._profile, name, converted)
-            if name == "yolo_enabled" and converted:
-                self._profile.recording_enabled = True
+            self._profile.apply_rules()
             self.session.event("action", "operator", "info", f"Setting changed: {name}",
                                {"name": name, "from": previous, "to": converted})
             self.profileChanged.emit()
         except (TypeError, ValueError):
             self._message = f"Invalid value for {name}."
             self.messageChanged.emit()
+
+    @Slot(str)
+    @audited
+    def removeExpertOption(self, name: str) -> None:
+        if self.runActive or name not in self._profile.expert_arguments:
+            return
+        del self._profile.expert_arguments[name]
+        self.profileChanged.emit()
+        self._set_message(f"Removed advanced setting {name}.")
 
     @Slot(str, str)
     @audited
@@ -472,7 +501,7 @@ class AppController(QObject):
 
     def _start_pipeline(self) -> None:
         env = runtime_environment()
-        commands = {"host": sourced_host_command(self.project_root, self._profile)}
+        model = None
         if self._profile.yolo_enabled:
             try:
                 registry = Registry(self.project_root)
@@ -480,12 +509,16 @@ class AppController(QObject):
             except LookupError as exc:
                 self._set_state(AppState.FAULT, str(exc))
                 return
+        run_directory = self.session.begin_run(Path(self._profile.recording_root).expanduser())
+        commands = {"host": sourced_host_command(self.project_root, self._profile, run_directory)}
+        if model is not None:
             paths = registry.container_paths(model.id, model.legacy)
             self._log("yolo", "info", f"YOLO model: {model.id} ({model.plan_detail})")
             commands["yolo"] = yolo_docker_command(self.project_root, self._profile, paths)
-        run_record = self.session.record_run(self._profile.to_dict(), commands)
+        self.session.record_run(self._profile.to_dict(), commands,
+                                {"yolo_model": model.id if model else None})
         self.session.event("run", "gui", "info", "Run starting",
-                           {"profile": self._profile.name, "record": str(run_record)})
+                           {"profile": self._profile.name, "run": str(run_directory)})
         try:
             if self._profile.yolo_enabled:
                 self._set_state(AppState.STARTING_YOLO, "Starting the YOLO container…")
@@ -508,6 +541,8 @@ class AppController(QObject):
         except Exception as exc:
             self._log("supervisor", "error", str(exc))
             self._set_state(AppState.FAULT, str(exc))
+            if not self._run_processes():
+                self.session.end_run(f"failed to start: {exc}")
 
     @Slot()
     @audited
@@ -657,11 +692,45 @@ class AppController(QObject):
             stopped = False
         return stopped
 
+    def _sweep_leftovers(self) -> list[process_control.StopReport]:
+        """After a run is stopped, stop anything DracoViLoc-related that is
+        still running (strays started from a terminal, containers, RViz), so
+        nothing has to be killed by hand. Setup jobs are left alone."""
+        reports = []
+        if self.processes.is_running("rviz"):
+            self._operator_stopped.add("rviz")
+            stopped = self.processes.stop("rviz")
+            reports.append(process_control.StopReport(
+                "rviz", stopped, ["Ctrl+C"], [] if stopped else ["rviz did not stop"]))
+        try:
+            items = process_control.scan(self.project_root, self.processes.snapshot(),
+                                         self.processes.systemd.unit_processes)
+        except Exception as exc:
+            self._log("processes", "error", f"Leftover scan failed: {exc}")
+            return reports
+        for item in items:
+            if item.kind == "process":
+                reports.append(process_control.stop_processes([item.pid], f"{item.name} ({item.pid})"))
+            elif item.kind == "container" and not item.name.startswith("dracoviloc_"):
+                reports.append(process_control.stop_container(item.name))
+        for report in reports:
+            self.session.event("process", report.target, "info" if report.stopped else "error",
+                               "Leftover after Stop all: " + report.summary(), report.to_dict())
+            self._log("processes", "info" if report.stopped else "error", report.summary())
+        return reports
+
     def _finish_shutdown(self) -> None:
-        if self._stop_all_processes():
-            self._set_state(AppState.IDLE, "All managed processes stopped.")
+        stopped = self._stop_all_processes()
+        leftovers = self._sweep_leftovers()
+        stuck = [report for report in leftovers if not report.stopped]
+        if stopped and not stuck:
+            extra = f" Also stopped {len(leftovers)} leftover item(s)." if leftovers else ""
+            self._set_state(AppState.IDLE, "All processes stopped." + extra)
+            self.session.end_run("stopped")
         else:
-            self._set_state(AppState.FAULT, "Some processes did not stop; see System logs.")
+            details = "; ".join(report.summary() for report in stuck)
+            self._set_state(AppState.FAULT, "Some processes did not stop. " + (details or "See Logs."))
+            self.session.end_run("stopped with processes still running")
         if self._shutting_down_for_quit:
             self._quit()
 
@@ -852,6 +921,194 @@ class AppController(QObject):
         self._start_job("image_load", "Load project image",
                         ["docker", "load", "-i", str(path)], 120.0)
 
+    # ------------------------------------------------------------- processes
+    @Property(str, notify=processListChanged)
+    def processListJson(self) -> str:
+        return json.dumps(self._process_list)
+
+    @Slot()
+    def refreshProcesses(self) -> None:
+        """Not audited: the Processes page refreshes this every few seconds."""
+        if self._process_list.get("scanning"):
+            return
+        self._process_list["scanning"] = True
+
+        def work():
+            started = time.monotonic()
+            try:
+                items = process_control.scan(
+                    self.project_root, self.processes.snapshot(),
+                    self.processes.systemd.unit_processes)
+                restartable = {name for name, unit in self._restart_commands().items() if unit}
+                rows = []
+                for item in items:
+                    row = item.to_dict()
+                    row["restartable"] = item.kind == "unit" and item.name in restartable
+                    rows.append(row)
+                # Stopped units that can be started again (e.g. YOLO, RViz).
+                running = {item.name for item in items if item.kind == "unit"}
+                for name in sorted(restartable - running):
+                    rows.append({"id": f"unit:{name}", "kind": "unit", "name": name, "state": "stopped",
+                                 "managed": True, "restartable": True, "children": [], "pid": 0,
+                                 "command": "", "cpu_percent": 0, "memory_mb": 0, "started": 0, "unit": ""})
+                self._process_list["items"] = rows
+            except Exception as exc:
+                self._process_list["report"] = [f"Scan failed: {exc}"]
+            finally:
+                self._process_list["scanning"] = False
+                self._process_list["scan_ms"] = round((time.monotonic() - started) * 1000)
+                self.processListChanged.emit()
+        threading.Thread(target=work, daemon=True).start()
+
+    RESTARTABLE = {"yolo", "rviz"}  # the host stack restarts as a new run
+
+    def _restart_commands(self) -> dict[str, list[str]]:
+        return {unit["name"]: unit.get("command") for unit in self.processes.snapshot()
+                if unit["name"] in self.RESTARTABLE}
+
+    def _report(self, reports: list[process_control.StopReport]) -> None:
+        lines = [report.summary() for report in reports]
+        for report in reports:
+            self.session.event("process", report.target,
+                               "info" if report.stopped else "error", report.summary(),
+                               report.to_dict())
+            self._log("processes", "info" if report.stopped else "error", report.summary())
+        self._process_list["report"] = lines
+        self._set_message(lines[-1] if len(lines) == 1 else
+                          f"{sum(r.stopped for r in reports)}/{len(reports)} stopped; see Processes")
+        self.refreshProcesses()
+
+    @Slot(str, bool)
+    @audited
+    def stopProcessItem(self, item_id: str, force: bool) -> None:
+        """Stop (Ctrl+C first) or kill (SIGKILL) a unit, process tree or container."""
+        kind, _, key = item_id.partition(":")
+
+        def work():
+            if kind == "unit":
+                self._operator_stopped.add(key)
+                if force:
+                    self.processes.kill(key)
+                    time.sleep(1.0)
+                    stopped = not self.processes.is_running(key)
+                    report = process_control.StopReport(
+                        key, stopped, ["SIGKILL to the whole unit"],
+                        [] if stopped else [f"{key} is still running"])
+                else:
+                    stopped = self.processes.stop(key)
+                    report = process_control.StopReport(
+                        key, stopped, ["Ctrl+C, SIGKILL after the stop timeout"],
+                        [] if stopped else [f"{key} did not stop"])
+                if key == "yolo":
+                    process_control.stop_container(docker_control.YOLO_CONTAINER)
+                self._report([report])
+            elif kind == "pid":
+                pid = int(key)
+                if force:
+                    self._report([process_control.stop_processes_now([pid], f"process {pid}")])
+                else:
+                    self._report([process_control.stop_processes([pid], f"process {pid}")])
+            elif kind == "container":
+                self._report([process_control.stop_container(key)])
+        threading.Thread(target=work, daemon=True).start()
+
+    @Slot(str)
+    @audited
+    def restartUnit(self, name: str) -> None:
+        command = self._restart_commands().get(name)
+        if not command:
+            self._set_message(f"No earlier command to restart {name}.")
+            return
+
+        def work():
+            if self.processes.is_running(name):
+                self._operator_stopped.add(name)
+                self.processes.stop(name)
+            if name == "yolo":
+                # Killing the unit stops the docker client; the container itself
+                # may still be shutting down. Wait until it is really gone.
+                report = process_control.stop_container(docker_control.YOLO_CONTAINER)
+                if not report.stopped:
+                    self._report([report])
+                    return
+                docker_control.remove_if_stopped()
+            try:
+                self.processes.start(name, command, self.project_root, runtime_environment())
+                self._set_message(f"{name} restarted.")
+            except Exception as exc:
+                self._set_message(f"{name} could not restart: {exc}")
+            self.refreshProcesses()
+        threading.Thread(target=work, daemon=True).start()
+
+    @Slot()
+    @audited
+    def openRviz(self) -> None:
+        if self.processes.is_running("rviz"):
+            self._set_message("RViz is already open.")
+            return
+        script = ("source /opt/ros/humble/setup.bash && "
+                  f"source {shlex.quote(str(self.project_root / 'install/setup.bash'))} && exec \"$@\"")
+        command = ["/bin/bash", "-lc", script, "dracoviloc-gui", "ros2", "launch",
+                   "dracoviloc_bringup", "rviz.launch.py",
+                   f"dual_arm:={'true' if self._profile.dual_arm else 'false'}"]
+        try:
+            self.processes.start("rviz", command, self.project_root, runtime_environment(), 10.0)
+            self._set_message("RViz started.")
+        except Exception as exc:
+            self._set_message(f"RViz could not start: {exc}")
+        self.refreshProcesses()
+
+    @Slot()
+    @audited
+    def cleanUpEverything(self) -> None:
+        """Stop every DracoViLoc unit, stray process and container, then verify."""
+        def work():
+            reports = []
+            for name in self.processes.running():
+                self._operator_stopped.add(name)
+                stopped = self.processes.stop(name)
+                reports.append(process_control.StopReport(
+                    name, stopped, ["Ctrl+C, SIGKILL after the stop timeout"],
+                    [] if stopped else [f"{name} did not stop"]))
+            items = process_control.scan(self.project_root, self.processes.snapshot(),
+                                         self.processes.systemd.unit_processes)
+            for item in items:
+                if item.kind == "process":
+                    reports.append(process_control.stop_processes([item.pid], f"{item.name} ({item.pid})"))
+                elif item.kind == "container":
+                    reports.append(process_control.stop_container(item.name))
+            if not reports:
+                reports.append(process_control.StopReport("DracoViLoc", True, ["nothing was running"], []))
+            if self.session.run_directory is not None:
+                self.session.end_run("cleaned up from the Processes page")
+            if self._state not in {AppState.IDLE}:
+                self._set_state(AppState.IDLE, "Everything was stopped from the Processes page.")
+            self._report(reports)
+        threading.Thread(target=work, daemon=True).start()
+
+    # ------------------------------------------------------------ robot check
+    @Property(str, notify=robotCheckChanged)
+    def robotCheckJson(self) -> str:
+        return json.dumps(self._robot_check)
+
+    @Slot()
+    @audited
+    def checkRobots(self) -> None:
+        """Ping each configured FAIRINO controller and open its XML-RPC port."""
+        addresses = ({"left": self._profile.left_robot_ip, "right": self._profile.right_robot_ip}
+                     if self._profile.dual_arm else {"robot": self._profile.robot_ip})
+        self._robot_check = {key: {"ip": ip, "state": "checking"} for key, ip in addresses.items()}
+        self.robotCheckChanged.emit()
+
+        def work():
+            for key, ip in addresses.items():
+                result = process_control.check_robot(ip)
+                self._robot_check[key] = {"ip": ip, **result}
+                self.session.event("action", "robots", "info" if result["ok"] else "warning",
+                                   f"Connection check {ip}: {result['detail']}")
+                self.robotCheckChanged.emit()
+        threading.Thread(target=work, daemon=True).start()
+
     @Slot(str, str)
     def uiEvent(self, action: str, detail: str) -> None:
         """Operator interactions handled purely in QML (navigation, dialogs)."""
@@ -861,7 +1118,8 @@ class AppController(QObject):
     @Slot()
     @audited
     def openSessionFolder(self) -> None:
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.session.directory)))
+        folder = self.session.run_directory or self.session.directory
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     @Slot(str)
     @audited

@@ -569,20 +569,7 @@ class AgentRuntime:
         return True, "Remote run stopped"
 
     def list_recordings(self) -> list[dict[str, Any]]:
-        items = []
-        root = Path(self.config.recordings_root)
-        for kind in ("video", "audio"):
-            for directory in (root / kind).glob("*") if (root / kind).exists() else []:
-                if not directory.is_dir():
-                    continue
-                metadata = directory / "metadata.json"
-                state = "unknown"
-                if metadata.exists():
-                    try:
-                        state = json.loads(metadata.read_text(encoding="utf-8")).get("state", "unknown")
-                    except (OSError, ValueError):
-                        state = "error"
-                size = sum(path.stat().st_size for path in directory.rglob("*") if path.is_file())
-                items.append({"timestamp": directory.name, "kind": kind,
-                              "path": str(directory), "state": state, "size_bytes": size})
-        return sorted(items, key=lambda item: item["timestamp"], reverse=True)
+        # Same layout rules as the GUI: runs/<time>/{video,audio}/ plus the
+        # earlier runs/{video,audio}/<time>/ layout.
+        from .recordings import discover_recordings
+        return [row.to_dict() for row in discover_recordings(Path(self.config.recordings_root))]

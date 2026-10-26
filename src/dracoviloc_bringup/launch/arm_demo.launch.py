@@ -11,6 +11,9 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 
+RAW_CAMERA_TOPICS = ("/image/compressed", "/image")
+
+
 def _enabled(context, name):
     return LaunchConfiguration(name).perform(context).lower() in ("1", "true", "yes", "on")
 
@@ -53,11 +56,21 @@ def _configure_pipeline(context):
     forced_recording = yolo_enabled and not recording_enabled
     if yolo_enabled:
         recording_enabled = True
-        video_topic = context.launch_configurations.get("recording_video_topic", "/image")
-        if video_topic != "/image":
+        video_topic = context.launch_configurations.get("recording_video_topic", "/image/compressed")
+        if video_topic not in RAW_CAMERA_TOPICS:
             raise RuntimeError(
-                "recording_video_topic must be the raw camera topic /image "
-                f"(got {video_topic}); overlay images are never recorded")
+                "recording_video_topic must be the raw camera image "
+                f"({' or '.join(RAW_CAMERA_TOPICS)}, got {video_topic}); "
+                "overlay images are never recorded")
+
+    # One folder per run holds everything it produces: video/ and audio/
+    # (uploaded to Drive), telemetry.jsonl, bag/, diagnostics/, logs.
+    run_dir = context.launch_configurations.get("run_dir", "")
+    if not run_dir:
+        recording_root = context.launch_configurations.get(
+            "recording_root", os.path.expanduser("~/DracoViLoc/runs"))
+        run_dir = os.path.join(os.path.expanduser(recording_root),
+                               datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 
     if recording_enabled and not (audio_enabled or yolo_enabled):
         raise RuntimeError(
@@ -132,7 +145,7 @@ def _configure_pipeline(context):
             name="multimodal_recorder",
             output="screen",
             parameters=[{
-                "output_root": LaunchConfiguration("recording_root"),
+                "output_directory": run_dir,
                 "video_topic": LaunchConfiguration("recording_video_topic"),
                 "audio_topic": LaunchConfiguration("recording_audio_topic"),
                 "sst_topic": LaunchConfiguration("recording_sst_topic"),
@@ -150,7 +163,8 @@ def _configure_pipeline(context):
                 get_package_share_directory("dracoviloc_recording"), "launch", "sss_channels.launch.py")),
             launch_arguments={
                 "audio_topic": LaunchConfiguration("recording_audio_topic"),
-                "output_root": LaunchConfiguration("sss_channels_root"),
+                "output_root": (LaunchConfiguration("sss_channels_root").perform(context)
+                                or os.path.join(run_dir, "audio", "channels")),
                 "gain_db": LaunchConfiguration("sss_channels_gain_db"),
             }.items()))
     if audio_enabled or yolo_enabled:
@@ -319,11 +333,13 @@ def _configure_pipeline(context):
             }],
             output="screen"))
 
+    if context.launch_configurations.get("monitor_enabled", "true").lower() == "true":
+        actions.append(IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(
+                get_package_share_directory("dracoviloc_monitor"), "launch", "monitor.launch.py")),
+            launch_arguments={"log_dir": run_dir}.items()))
     if _enabled(context, "diagnostics_enabled"):
-        run_timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-        diagnostics_dir = os.path.join(
-            LaunchConfiguration("recording_root").perform(context),
-            "diagnostics", run_timestamp)
+        diagnostics_dir = os.path.join(run_dir, "diagnostics")
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
                 get_package_share_directory("dracoviloc_diagnostics"), "launch", "diagnostics.launch.py")),
@@ -433,13 +449,19 @@ def generate_launch_description():
                         "recording. Requires audio_enabled or yolo_enabled; "
                         "pass recording_enabled:=false to opt out."),
         DeclareLaunchArgument(
-            "recording_root", default_value="/home/dhianeifar/DracoViLoc/runs"),
+            "recording_root",
+            default_value=PathJoinSubstitution([EnvironmentVariable("HOME"), "DracoViLoc", "runs"]),
+            description="Each run without run_dir is written to <recording_root>/<time>/."),
         DeclareLaunchArgument(
-            "recording_video_topic", default_value="/image",
-            description="Clean, undetected camera feed (no YOLO boxes drawn), "
-                        "so recordings are suitable for later annotation. Use "
-                        "/yolov8_processed_image instead to record the "
-                        "YOLO-annotated view."),
+            "run_dir", default_value="",
+            description="This run's folder (video/, audio/, telemetry.jsonl, bag/, "
+                        "diagnostics/). Empty: <recording_root>/<YYYY-MM-DD_HH-MM-SS>."),
+        DeclareLaunchArgument(
+            "recording_video_topic", default_value="/image/compressed",
+            description="Raw camera feed, never the YOLO-annotated view. "
+                        "/image/compressed (the camera's high-quality JPEG stream) "
+                        "arrives complete at full rate; /image (uncompressed) may drop "
+                        "frames over the UDP transport."),
         DeclareLaunchArgument(
             "recording_audio_topic", default_value="/sss"),
         DeclareLaunchArgument(
@@ -451,9 +473,8 @@ def generate_launch_description():
             description="Record /sss into one WAV file per channel under "
                         "sss_channels_root (requires audio_enabled)."),
         DeclareLaunchArgument(
-            "sss_channels_root",
-            default_value=PathJoinSubstitution(
-                [EnvironmentVariable("HOME"), "DracoViLoc", "recordings"])),
+            "sss_channels_root", default_value="",
+            description="Empty: <run_dir>/audio/channels (uploaded with the audio)."),
         DeclareLaunchArgument(
             "sss_channels_gain_db", default_value="0.0",
             description="Digital gain in dB for the per-channel WAV recorder; "
@@ -570,10 +591,13 @@ def generate_launch_description():
         DeclareLaunchArgument("table_mic_pitch", default_value="0.0"),
         DeclareLaunchArgument("table_mic_roll", default_value="1.57079632679"),
         DeclareLaunchArgument(
+            "monitor_enabled", default_value="true",
+            description="Video previews and telemetry for the control center (dracoviloc_monitor)."),
+        DeclareLaunchArgument(
             "diagnostics_enabled", default_value="true",
             description="Log yolo/mobilenetv2/ekf timing events and "
                         "end-effector position/speed/acceleration/jerk on "
-                        "every run, under recording_root/diagnostics/<run>/."),
+                        "every run, under <run_dir>/diagnostics/."),
         DeclareLaunchArgument(
             "diagnostics_ee_frame", default_value="wrist3_link",
             description="TF frame treated as the end effector "

@@ -50,22 +50,39 @@ is_complete() {
 
 synced=0
 failed=0
+
+# upload <local folder> <remote path>
+upload() {
+  if rclone copy "$1" "${REMOTE_NAME}:${REMOTE_PATH}/$2" \
+      "${RCLONE_FLAGS[@]}" >> "${LOG_FILE}" 2>&1; then
+    synced=$((synced + 1))
+  else
+    failed=$((failed + 1))
+    log "FAILED $2 (will retry next run)"
+  fi
+}
+
+# Current layout: runs/<YYYY-MM-DD_HH-MM-SS>/{video,audio}/ -> <remote>/<run>/{video,audio}.
+# Only the recordings are uploaded; logs, telemetry and bags stay local.
+for run_dir in "${RUNS_ROOT}"/*/; do
+  run_dir="${run_dir%/}"
+  run="$(basename "${run_dir}")"
+  [[ "${run}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2} ]] || continue
+  for modality in video audio; do
+    if is_complete "${run_dir}/${modality}"; then
+      upload "${run_dir}/${modality}" "${run}/${modality}"
+    fi
+  done
+done
+
+# Earlier layout: runs/{video,audio}/<timestamp>/.
 for modality in video audio; do
   modality_root="${RUNS_ROOT}/${modality}"
   [[ -d "${modality_root}" ]] || continue
   for run_dir in "${modality_root}"/*/; do
-    [[ -d "${run_dir}" ]] || continue
     run_dir="${run_dir%/}"
-    ts="$(basename "${run_dir}")"
-    if ! is_complete "${run_dir}"; then
-      continue
-    fi
-    if rclone copy "${run_dir}" "${REMOTE_NAME}:${REMOTE_PATH}/${modality}/${ts}" \
-        "${RCLONE_FLAGS[@]}" >> "${LOG_FILE}" 2>&1; then
-      synced=$((synced + 1))
-    else
-      failed=$((failed + 1))
-      log "FAILED ${modality}/${ts} (will retry next run)"
+    if is_complete "${run_dir}"; then
+      upload "${run_dir}" "${modality}/$(basename "${run_dir}")"
     fi
   done
 done

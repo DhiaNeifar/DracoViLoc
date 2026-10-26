@@ -8,7 +8,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio)
+find_package(OpenCV REQUIRED COMPONENTS core imgcodecs imgproc videoio)
 
 add_executable(video_publisher_node src/video_publisher_node.cpp)
 target_compile_features(video_publisher_node PUBLIC cxx_std_17)

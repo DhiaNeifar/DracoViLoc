@@ -82,7 +82,9 @@ def host_launch_arguments(profile: RunProfile) -> list[str]:
     return [_arg(name, value) for name, value in values.items()]
 
 
-def sourced_host_command(project_root: Path, profile: RunProfile) -> list[str]:
+def sourced_host_command(project_root: Path, profile: RunProfile,
+                         run_dir: Path | None = None) -> list[str]:
+    """run_dir: this run's folder (runs/<time>/); everything it records goes there."""
     script = (
         "source /opt/ros/humble/setup.bash && "
         f"source {shlex.quote(str(project_root / 'install/setup.bash'))} && exec \"$@\""
@@ -91,6 +93,7 @@ def sourced_host_command(project_root: Path, profile: RunProfile) -> list[str]:
         "/bin/bash", "-lc", script, "dracoviloc-gui",
         "ros2", "launch", "dracoviloc_bringup", "arm_demo.launch.py",
         *host_launch_arguments(profile),
+        *([_arg("run_dir", run_dir)] if run_dir else []),
     ]
 
 

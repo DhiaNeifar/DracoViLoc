@@ -19,6 +19,16 @@ ApplicationWindow {
         property bool remoteControllable: false
         property string processesJson: "[]"
         property string sessionLogDirectory: ""
+        property string runDirectory: ""
+        property string processListJson: "{\"items\": [], \"report\": []}"
+        property string robotCheckJson: "{}"
+        function refreshProcesses() {}
+        function stopProcessItem(id, force) {}
+        function restartUnit(name) {}
+        function openRviz() {}
+        function cleanUpEverything() {}
+        function checkRobots() {}
+        function removeExpertOption(name) {}
         property string setupJson: "{\"jobs\": [], \"saved_images\": []}"
         property bool jobActive: false
         function refreshSetup() {}
@@ -63,6 +73,28 @@ ApplicationWindow {
     color: "#0B1118"
     property int currentPage: 0
     property int cameraRevision: 0
+    property var cameraStreams: []
+    property string cameraView: "overlay"   // raw | overlay | both
+    property var telemetry: ({})
+    property var history: ({"score": [], "nis": [], "ee": [], "latency": []})
+    readonly property int historyLength: 150   // 15 s at 10 Hz
+    function fmt(value, digits) {
+        return (value === null || value === undefined || isNaN(value)) ? "–" : Number(value).toFixed(digits === undefined ? 1 : digits)
+    }
+    function cameraSource(stream) {
+        if (root.cameraRevision <= 0 || root.cameraStreams.indexOf(stream) < 0) return ""
+        return "image://camera/" + stream + "?" + root.cameraRevision
+    }
+    function stopItem(id, name, force) {
+        root.controller.stopProcessItem(id, force)
+    }
+    function pushHistory(name, value) {
+        let series = root.history[name].slice(-(root.historyLength - 1))
+        series.push(value === null || value === undefined ? NaN : value)
+        let next = Object.assign({}, root.history)
+        next[name] = series
+        root.history = next
+    }
     property bool shutdownApproved: false
     property var profile: JSON.parse(root.controller.profileJson)
     property var liveStatus: ({})
@@ -70,6 +102,10 @@ ApplicationWindow {
     property var processes: JSON.parse(root.controller.processesJson)
     property string selectedTerminal: ""
     property var setup: JSON.parse(root.controller.setupJson)
+    property var processList: JSON.parse(root.controller.processListJson)
+    property var robotCheck: JSON.parse(root.controller.robotCheckJson)
+    readonly property var pageNames: ["Dashboard", "Perception", "Run setup", "Recordings", "Logs", "Processes", "Setup & builds", "System"]
+    readonly property var pageTitles: ["Operations", "Perception", "Configure run", "Recording library", "System logs", "Processes", "Setup & builds", "System readiness"]
     property string setupTerminal: ""
 
     palette.window: "#0B1118"
@@ -95,9 +131,28 @@ ApplicationWindow {
 
     Connections {
         target: root.controller
+        ignoreUnknownSignals: true
+        function onTelemetryUpdated(payload) {
+            let t = JSON.parse(payload)
+            root.telemetry = t
+            pushHistory("score", t.yolo ? t.yolo.best_score : NaN)
+            pushHistory("latency", t.yolo ? t.yolo.latency_ms : NaN)
+            pushHistory("ee", t.ee ? t.ee.speed : NaN)
+            let nis = NaN
+            if (t.ekf && t.ekf.sources) {
+                let newest = 1e9
+                for (let name in t.ekf.sources) {
+                    let source = t.ekf.sources[name]
+                    if (source.age_s !== null && source.age_s < newest) { newest = source.age_s; nis = source.last_nis }
+                }
+            }
+            pushHistory("nis", nis)
+        }
         function onProfileChanged() { root.profile = JSON.parse(root.controller.profileJson) }
         function onRemoteChanged() { root.remoteState = JSON.parse(root.controller.remoteJson) }
         function onProcessesChanged() { root.processes = JSON.parse(root.controller.processesJson) }
+        function onProcessListChanged() { root.processList = JSON.parse(root.controller.processListJson) }
+        function onRobotCheckChanged() { root.robotCheck = JSON.parse(root.controller.robotCheckJson) }
         function onSetupChanged() {
             root.setup = JSON.parse(root.controller.setupJson)
             if (root.setup.current) root.setupTerminal = "job-" + root.setup.current
@@ -107,7 +162,9 @@ ApplicationWindow {
             preflightModel.clear()
             let rows = JSON.parse(payload)
             for (let row of rows) preflightModel.append(row)
-            preflightDrawer.open()
+            // A passing preflight is visible in the status message; only
+            // failures need the full report in front of the operator.
+            if (!ok || root.pageNames[root.currentPage] === "System") preflightDrawer.open()
         }
         function onLogAdded(payload) {
             let row = JSON.parse(payload)
@@ -186,9 +243,84 @@ ApplicationWindow {
             verticalAlignment: Text.AlignVCenter
         }
     }
+    component Sparkline: Canvas {
+        id: spark
+        property var values: []
+        property color lineColor: "#57CAD3"
+        property real threshold: NaN
+        implicitHeight: 54
+        onValuesChanged: requestPaint()
+        onPaint: {
+            let ctx = getContext("2d")
+            ctx.reset()
+            let points = values.filter(v => !isNaN(v))
+            if (points.length < 2) return
+            let low = Math.min.apply(null, points), high = Math.max.apply(null, points)
+            if (!isNaN(threshold)) { low = Math.min(low, threshold); high = Math.max(high, threshold) }
+            if (high - low < 1e-9) { high += 1; low -= 1 }
+            let y = v => height - 3 - (v - low) / (high - low) * (height - 6)
+            if (!isNaN(threshold)) {
+                ctx.strokeStyle = "#7A5A2A"; ctx.lineWidth = 1
+                ctx.beginPath(); ctx.moveTo(0, y(threshold)); ctx.lineTo(width, y(threshold)); ctx.stroke()
+            }
+            ctx.strokeStyle = lineColor; ctx.lineWidth = 1.6
+            ctx.beginPath()
+            let started = false
+            for (let i = 0; i < values.length; ++i) {
+                if (isNaN(values[i])) { started = false; continue }
+                let x = i / Math.max(1, root.historyLength - 1) * width
+                if (!started) { ctx.moveTo(x, y(values[i])); started = true } else ctx.lineTo(x, y(values[i]))
+            }
+            ctx.stroke()
+        }
+    }
+    component Metric: ColumnLayout {
+        property string label
+        property string value
+        property color valueColor: "#EEF5F8"
+        spacing: 1
+        Label { text: parent.label; color: "#7E8F9C"; font.pixelSize: 11 }
+        Label { text: parent.value; color: parent.valueColor; font.pixelSize: 17; font.bold: true; font.family: "monospace" }
+    }
+    component CameraPane: Rectangle {
+        property string stream: "raw"
+        radius: 10; color: "#080D12"; clip: true
+        Image {
+            anchors.fill: parent; anchors.margins: 2
+            source: root.cameraSource(parent.stream)
+            fillMode: Image.PreserveAspectFit
+            cache: false
+        }
+        Column {
+            anchors.centerIn: parent; spacing: 6
+            visible: root.cameraSource(parent.stream) === ""
+            Label { anchors.horizontalCenter: parent.horizontalCenter; text: parent.parent.stream === "raw" ? "RAW CAMERA STANDBY" : "OVERLAY STANDBY"; color: "#617586"; font.pixelSize: 13; font.bold: true }
+            MutedText { anchors.horizontalCenter: parent.horizontalCenter; text: "Waiting for /dracoviloc/preview/" + parent.parent.stream }
+        }
+        Label {
+            anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 8
+            text: parent.stream === "raw" ? "RAW" : "OVERLAY"; color: "#93A7B8"; font.pixelSize: 10; font.bold: true
+        }
+    }
+    component ViewSwitch: RowLayout {
+        spacing: 4
+        Repeater {
+            model: [["raw", "Raw"], ["overlay", "Overlay"], ["both", "Side by side"]]
+            delegate: Button {
+                required property var modelData
+                flat: true; implicitHeight: 30
+                text: modelData[1]
+                onClicked: { root.cameraView = modelData[0]; root.controller.uiEvent("camera_view", modelData[0]) }
+                background: Rectangle { radius: 7; color: root.cameraView === parent.modelData[0] ? "#17313A" : "#121C26"; border.color: root.cameraView === parent.modelData[0] ? "#35C6D0" : "#1E2C39" }
+                contentItem: Text { text: parent.text; color: root.cameraView === parent.modelData[0] ? "#67DFE7" : "#93A7B8"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; leftPadding: 8; rightPadding: 8 }
+            }
+        }
+    }
     component SafetyButton: Button {
         id: control
         implicitHeight: 46
+        leftPadding: 16
+        rightPadding: 16
         font.pixelSize: 14
         font.weight: Font.Bold
         background: Rectangle {
@@ -248,7 +380,7 @@ ApplicationWindow {
                 }
 
                 Repeater {
-                    model: ["Dashboard", "Run setup", "Recordings", "Logs", "Setup & builds", "System"]
+                    model: root.pageNames
                     delegate: Button {
                         id: navButton
                         required property string modelData
@@ -260,8 +392,9 @@ ApplicationWindow {
                         onClicked: {
                             root.controller.uiEvent("navigate", modelData)
                             root.currentPage = index
-                            if (index === 2) root.controller.refreshRecordings()
-                            if (index === 1 || index === 4) root.controller.refreshSetup()
+                            if (modelData === "Recordings") root.controller.refreshRecordings()
+                            if (modelData === "Run setup" || modelData === "Setup & builds") root.controller.refreshSetup()
+                            if (modelData === "Processes") root.controller.refreshProcesses()
                         }
                         background: Rectangle {
                             radius: 9
@@ -309,7 +442,7 @@ ApplicationWindow {
                 RowLayout {
                     anchors.fill: parent; anchors.leftMargin: 26; anchors.rightMargin: 26
                     ColumnLayout {
-                        Label { text: ["Operations", "Configure run", "Recording library", "System logs", "Setup & builds", "System readiness"][root.currentPage]; color: "#EEF5F8"; font.pixelSize: 22; font.bold: true }
+                        Label { text: root.pageTitles[root.currentPage]; color: "#EEF5F8"; font.pixelSize: 22; font.bold: true }
                         MutedText { text: root.controller.message; Layout.maximumWidth: 760 }
                     }
                     Item { Layout.fillWidth: true }
@@ -341,25 +474,21 @@ ApplicationWindow {
                                     anchors.fill: parent; anchors.margins: 16
                                     RowLayout {
                                         SectionTitle { text: "Live camera" }
+                                        ViewSwitch {}
                                         Item { Layout.fillWidth: true }
                                         StatusDot { healthy: root.liveStatus.freshness !== undefined && root.liveStatus.freshness["/image"] !== undefined && root.liveStatus.freshness["/image"] < 1.0 }
                                         MutedText { text: root.liveStatus.freshness !== undefined && root.liveStatus.freshness["/image"] !== undefined && root.liveStatus.freshness["/image"] < 1.0 ? "Live" : "Waiting" }
                                     }
-                                    Rectangle {
-                                        Layout.fillWidth: true; Layout.fillHeight: true
-                                        radius: 10; color: "#080D12"; clip: true
-                                        Image {
-                                            anchors.fill: parent; anchors.margins: 2
-                                            source: root.cameraRevision > 0 ? "image://camera/live?" + root.cameraRevision : ""
-                                            fillMode: Image.PreserveAspectFit
-                                            cache: false
+                                    RowLayout {
+                                        Layout.fillWidth: true; Layout.fillHeight: true; spacing: 8
+                                        CameraPane {
+                                            Layout.fillWidth: true; Layout.fillHeight: true
+                                            stream: root.cameraView === "raw" ? "raw" : "overlay"
                                         }
-                                        Column {
-                                            anchors.centerIn: parent
-                                            visible: !(root.liveStatus.freshness !== undefined && root.liveStatus.freshness["/image"] !== undefined && root.liveStatus.freshness["/image"] < 1.0)
-                                            spacing: 8
-                                            Label { anchors.horizontalCenter: parent.horizontalCenter; text: "CAMERA STANDBY"; color: "#617586"; font.pixelSize: 14; font.bold: true }
-                                            MutedText { text: "Start a YOLO profile to receive /image" }
+                                        CameraPane {
+                                            visible: root.cameraView === "both"
+                                            Layout.fillWidth: true; Layout.fillHeight: true
+                                            stream: "raw"
                                         }
                                     }
                                 }
@@ -367,17 +496,24 @@ ApplicationWindow {
                             ColumnLayout {
                                 Layout.preferredWidth: 355; Layout.minimumWidth: 355; Layout.maximumWidth: 390; spacing: 16
                                 Panel {
-                                    Layout.fillWidth: true; Layout.preferredHeight: 212
+                                    Layout.fillWidth: true; Layout.preferredHeight: 250
                                     ColumnLayout {
                                         anchors.fill: parent; anchors.margins: 16; spacing: 10
                                         SectionTitle { text: "Run state" }
                                         Label { text: root.controller.state; color: "#55DCE5"; font.pixelSize: 25; font.bold: true }
-                                        MutedText { text: root.profile.name + " · " + (root.profile.dual_arm ? "TWO COBOTS" : "ONE COBOT") ; color: root.profile.dual_arm ? "#69D9B1" : "#D8A65A" }
+                                        ComboBox {
+                                            Layout.fillWidth: true
+                                            model: root.controller.profileNames
+                                            currentIndex: Math.max(0, root.controller.profileNames.indexOf(root.profile.name))
+                                            enabled: !root.controller.runActive
+                                            onActivated: root.controller.selectProfile(currentText)
+                                        }
+                                        MutedText { text: (root.profile.hardware_mode === "real" ? "REAL " : "MOCK ") + (root.profile.dual_arm ? "· TWO COBOTS" : "· ONE COBOT") + " · tracking " + root.profile.tracking_mode; color: root.profile.hardware_mode === "real" ? "#D8A65A" : "#69D9B1" }
                                         RowLayout {
                                             CalmButton { text: "Preflight"; enabled: !root.controller.runActive && (root.profile.execution_target !== "remote" || root.remoteState.state === "connected"); onClicked: root.controller.runPreflight() }
                                             CalmButton { text: "Start run"; enabled: !root.controller.runActive && (root.profile.execution_target !== "remote" || root.controller.remoteControllable); onClicked: root.controller.startRun() }
                                         }
-                                        CalmButton { Layout.fillWidth: true; text: "Stop all safely"; enabled: root.controller.runActive && (root.profile.execution_target !== "remote" || root.controller.remoteControllable); onClicked: stopAllDialog.open() }
+                                        CalmButton { Layout.fillWidth: true; text: "Stop all safely"; enabled: root.controller.runActive && (root.profile.execution_target !== "remote" || root.controller.remoteControllable); onClicked: root.controller.stopAll() }
                                         SafetyButton {
                                             Layout.fillWidth: true
                                             visible: root.controller.state === "Fault" && root.controller.runActive && root.profile.hardware_mode === "real"
@@ -393,16 +529,23 @@ ApplicationWindow {
                                         SectionTitle { text: "Motion control" }
                                         MutedText { Layout.fillWidth: true; text: "Motion never starts with the run. Home first, then arm tracking." }
                                         DelayButton {
-                                            Layout.fillWidth: true; delay: 1500
-                                            text: root.profile.dual_arm ? "Hold to home both cobots · 1.5 s" : "Hold to home · 1.5 s"
+                                            Layout.fillWidth: true; delay: 1000
+                                            text: root.profile.dual_arm ? "Hold to home both cobots" : "Hold to home"
                                             enabled: (root.controller.state === "Ready" || root.controller.state === "Home Ready") && root.liveStatus.home_service === true && (root.liveStatus.joint_count || 0) >= (root.profile.dual_arm ? 12 : 6) && (root.profile.execution_target !== "remote" || root.controller.remoteControllable)
-                                            onActivated: homeDialog.open()
+                                            onActivated: root.controller.requestHome()
                                         }
                                         DelayButton {
-                                            Layout.fillWidth: true; delay: 1500
-                                            text: "Hold to enable tracking · 1.5 s"
+                                            Layout.fillWidth: true; delay: 1000
+                                            visible: root.controller.state !== "Tracking"
+                                            text: "Hold to enable tracking"
                                             enabled: (root.controller.state === "Home Ready" || root.controller.state === "Ready") && root.liveStatus.tracking_service === true && (root.profile.execution_target !== "remote" || root.controller.remoteControllable)
-                                            onActivated: trackingDialog.open()
+                                            onActivated: root.controller.enableTracking()
+                                        }
+                                        CalmButton {
+                                            Layout.fillWidth: true
+                                            visible: root.controller.state === "Tracking"
+                                            text: "Disable tracking"
+                                            onClicked: root.controller.stopMotion()
                                         }
                                         MutedText { Layout.fillWidth: true; text: "Software stop is not a physical emergency stop."; color: "#D8A65A" }
                                     }
@@ -484,10 +627,233 @@ ApplicationWindow {
                                     Layout.fillWidth: true
                                     SectionTitle { text: "Controllers" }
                                     MutedText { text: root.liveStatus.controllers ? JSON.stringify(root.liveStatus.controllers).replace(/[{}\"]/g, "").replace(/,/g, "  ·  ") : "Waiting for controller_manager"; Layout.fillWidth: true }
-                                    MutedText { text: "Audio: " + (root.liveStatus.freshness && root.liveStatus.freshness["/sss"] < 1.0 ? "fresh" : "waiting") + "   ·   Detections: " + (root.liveStatus.freshness && root.liveStatus.freshness["/detections_output"] < 1.0 ? "fresh" : "waiting") }
+                                    MutedText { text: "Audio: " + (root.liveStatus.freshness && root.liveStatus.freshness["/sst"] < 1.0 ? "fresh" : "waiting") + "   ·   Detections: " + (root.liveStatus.freshness && root.liveStatus.freshness["/detections_output"] < 1.0 ? "fresh" : "waiting") }
                                 }
                             }
                         }
+                    }
+                }
+
+                // Perception
+                ScrollView {
+                    id: perceptionScroll
+                    contentWidth: availableWidth
+                    property var t: root.telemetry
+                    property var yolo: t.yolo || ({})
+                    property var mnet: t.mobilenetv2 || ({})
+                    property var ekf: t.ekf || ({})
+                    property var dirs: t.directions || ({})
+                    property var cam: t.camera || ({})
+                    property var ee: t.ee || ({})
+                    property bool live: t.t !== undefined && (Date.now() / 1000 - t.t) < 2.0
+                    ColumnLayout {
+                        x: 22; width: perceptionScroll.availableWidth - 44; spacing: 14
+                        Item { Layout.preferredHeight: 6 }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            SectionTitle { text: "Perception & monitoring" }
+                            StatusDot { healthy: perceptionScroll.live }
+                            MutedText { text: perceptionScroll.live ? "Telemetry live (10 Hz)" : "Waiting for /dracoviloc/telemetry: start a run" }
+                            Item { Layout.fillWidth: true }
+                            ViewSwitch {}
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 14
+                            Panel {
+                                Layout.fillWidth: true; Layout.preferredWidth: 3; Layout.preferredHeight: 470
+                                ColumnLayout {
+                                    anchors.fill: parent; anchors.margins: 14; spacing: 8
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        SectionTitle { text: "Camera" }
+                                        Item { Layout.fillWidth: true }
+                                        MutedText { text: root.fmt(perceptionScroll.cam.fps, 1) + " fps · " + (perceptionScroll.cam.width || "–") + "×" + (perceptionScroll.cam.height || "–") + " · raw recorded always" }
+                                    }
+                                    RowLayout {
+                                        Layout.fillWidth: true; Layout.fillHeight: true; spacing: 8
+                                        CameraPane { Layout.fillWidth: true; Layout.fillHeight: true; stream: root.cameraView === "overlay" ? "overlay" : "raw" }
+                                        CameraPane { visible: root.cameraView === "both"; Layout.fillWidth: true; Layout.fillHeight: true; stream: "overlay" }
+                                    }
+                                }
+                            }
+                            Panel {
+                                Layout.fillWidth: true; Layout.preferredWidth: 2; Layout.preferredHeight: 470
+                                ColumnLayout {
+                                    anchors.fill: parent; anchors.margins: 14; spacing: 10
+                                    SectionTitle { text: "YOLO" }
+                                    GridLayout {
+                                        columns: 3; columnSpacing: 18; rowSpacing: 8
+                                        Metric { label: "Inference rate"; value: root.fmt(perceptionScroll.yolo.inference_rate_hz, 1) + " Hz" }
+                                        Metric { label: "Detections"; value: (perceptionScroll.yolo.detections === undefined ? "–" : perceptionScroll.yolo.detections) }
+                                        Metric { label: "Best score"; value: root.fmt(perceptionScroll.yolo.best_score, 2); valueColor: (perceptionScroll.yolo.best_score || 0) > 0.5 ? "#5BD08A" : "#EEF5F8" }
+                                        Metric { label: "Latency"; value: root.fmt(perceptionScroll.yolo.latency_ms, 0) + " ms" }
+                                        Metric { label: "Azimuth"; value: root.fmt(perceptionScroll.dirs.yolo ? perceptionScroll.dirs.yolo.azimuth_deg : NaN, 1) + "°" }
+                                        Metric { label: "Elevation"; value: root.fmt(perceptionScroll.dirs.yolo ? perceptionScroll.dirs.yolo.elevation_deg : NaN, 1) + "°" }
+                                    }
+                                    MutedText { text: "Best score (15 s)" }
+                                    Sparkline { Layout.fillWidth: true; values: root.history.score; lineColor: "#5BD08A" }
+                                    MutedText { text: "Camera → detection latency, ms (15 s)" }
+                                    Sparkline { Layout.fillWidth: true; values: root.history.latency; lineColor: "#E8C468" }
+                                    MutedText { Layout.fillWidth: true; wrapMode: Text.Wrap; text: "Directions are unit vectors in " + ((perceptionScroll.dirs.yolo && perceptionScroll.dirs.yolo.frame) || "the tracking frame") + "; azimuth = atan2(y, x), elevation = asin(z)." }
+                                    Item { Layout.fillHeight: true }
+                                }
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 14
+                            Panel {
+                                Layout.fillWidth: true; Layout.preferredHeight: 330
+                                ColumnLayout {
+                                    anchors.fill: parent; anchors.margins: 14; spacing: 8
+                                    RowLayout {
+                                        SectionTitle { text: "MobileNetV2" }
+                                        Item { Layout.fillWidth: true }
+                                        MutedText { text: root.fmt(perceptionScroll.mnet.window_rate_hz, 1) + " windows/s · " + root.fmt(perceptionScroll.mnet.inference_ms, 1) + " ms" }
+                                    }
+                                    Repeater {
+                                        model: perceptionScroll.mnet.channels || []
+                                        delegate: RowLayout {
+                                            id: channelRow
+                                            required property var modelData
+                                            Layout.fillWidth: true; spacing: 8
+                                            opacity: modelData.age_s !== null && modelData.age_s < 3 ? 1.0 : 0.45
+                                            Label { text: "ch " + channelRow.modelData.channel; color: "#93A7B8"; font.family: "monospace"; Layout.preferredWidth: 40 }
+                                            Rectangle {
+                                                Layout.fillWidth: true; height: 16; radius: 4; color: "#0E151D"; border.color: "#1E2C39"
+                                                Rectangle {
+                                                    width: parent.width * Math.max(0, Math.min(1, channelRow.modelData.probability || 0)); height: parent.height; radius: 4
+                                                    color: channelRow.modelData.decision ? "#5BD08A" : "#35C6D0"
+                                                }
+                                                Rectangle { x: parent.width * 0.75; width: 2; height: parent.height; color: "#E8C468"; opacity: 0.8 }
+                                            }
+                                            Label { text: root.fmt(channelRow.modelData.probability, 2); color: "#D9E6EE"; font.family: "monospace"; Layout.preferredWidth: 40 }
+                                            Label { text: channelRow.modelData.votes + "/" + channelRow.modelData.vote_window; color: "#93A7B8"; font.family: "monospace"; Layout.preferredWidth: 32 }
+                                            Label { text: channelRow.modelData.decision ? "DRONE" : (channelRow.modelData.actionable ? "–" : "diag"); color: channelRow.modelData.decision ? "#5BD08A" : "#7E8F9C"; font.bold: true; Layout.preferredWidth: 52 }
+                                            Label { text: "track " + channelRow.modelData.track_id; color: "#7E8F9C"; Layout.preferredWidth: 60 }
+                                        }
+                                    }
+                                    MutedText { visible: !(perceptionScroll.mnet.channels || []).length; text: "No inference windows yet (needs active ODAS tracks)." }
+                                    MutedText { Layout.fillWidth: true; wrapMode: Text.Wrap; text: "Bar = drone probability; yellow tick = decision threshold. Decisions and published directions are unchanged; this view only reports them." }
+                                    Item { Layout.fillHeight: true }
+                                }
+                            }
+                            Panel {
+                                Layout.fillWidth: true; Layout.preferredHeight: 330
+                                ColumnLayout {
+                                    anchors.fill: parent; anchors.margins: 14; spacing: 8
+                                    RowLayout {
+                                        SectionTitle { text: "EKF fusion" }
+                                        Item { Layout.fillWidth: true }
+                                        MutedText { text: "fused az " + root.fmt(perceptionScroll.dirs.ekf ? perceptionScroll.dirs.ekf.azimuth_deg : NaN, 1) + "° · el " + root.fmt(perceptionScroll.dirs.ekf ? perceptionScroll.dirs.ekf.elevation_deg : NaN, 1) + "°" }
+                                    }
+                                    GridLayout {
+                                        Layout.fillWidth: true; columns: 6; columnSpacing: 12; rowSpacing: 4
+                                        Repeater {
+                                            model: ["Source", "Rate", "Accepted", "Rejected", "Last NIS", "Innovation"]
+                                            delegate: Label { required property string modelData; text: modelData; color: "#7E8F9C"; font.pixelSize: 11 }
+                                        }
+                                        Repeater {
+                                            model: Object.keys(perceptionScroll.ekf.sources || {})
+                                            delegate: Repeater {
+                                                id: sourceRow
+                                                required property string modelData
+                                                property var src: perceptionScroll.ekf.sources[modelData]
+                                                property var counts: src ? src.decisions : ({})
+                                                property int accepted: (counts.accepted || 0) + (counts.initialized || 0) + (counts.reacquired || 0)
+                                                property int rejected: (counts.rejected_nis || 0) + (counts.rejected_bearing_gate || 0) + (counts.rejected_first_arrival || 0)
+                                                model: [
+                                                    modelData.replace("/direction", "").replace("/", ""),
+                                                    root.fmt(src ? src.rate_hz : NaN, 1) + " Hz",
+                                                    String(accepted),
+                                                    String(rejected) + (rejected ? " (" + ((counts.rejected_nis || 0) ? "NIS " + counts.rejected_nis : "") + ((counts.rejected_bearing_gate || 0) ? " gate " + counts.rejected_bearing_gate : "") + ")" : ""),
+                                                    root.fmt(src ? src.last_nis : NaN, 2),
+                                                    root.fmt(src ? src.last_innovation_deg : NaN, 1) + "°"
+                                                ]
+                                                delegate: Label { required property string modelData; text: modelData; color: "#D9E6EE"; font.family: "monospace" }
+                                            }
+                                        }
+                                    }
+                                    MutedText { text: "NIS of the latest update (15 s) · gate " + root.fmt(perceptionScroll.ekf.nis_gate, 2) }
+                                    Sparkline { Layout.fillWidth: true; values: root.history.nis; threshold: perceptionScroll.ekf.nis_gate === undefined || perceptionScroll.ekf.nis_gate === null ? NaN : perceptionScroll.ekf.nis_gate; lineColor: "#93BFFF" }
+                                    Item { Layout.fillHeight: true }
+                                }
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 14
+                            Panel {
+                                Layout.fillWidth: true; Layout.preferredWidth: 3; Layout.preferredHeight: 400
+                                ColumnLayout {
+                                    anchors.fill: parent; anchors.margins: 14; spacing: 6
+                                    RowLayout {
+                                        SectionTitle { text: "Arms" }
+                                        Item { Layout.fillWidth: true }
+                                        MutedText { text: "joint states " + root.fmt(perceptionScroll.t.joints ? perceptionScroll.t.joints.rate_hz : NaN, 0) + " Hz · rad, rad/s, rad/s², rad/s³" }
+                                    }
+                                    GridLayout {
+                                        Layout.fillWidth: true; columns: 5; columnSpacing: 16; rowSpacing: 2
+                                        Repeater {
+                                            model: ["Joint", "Position", "Velocity", "Acceleration", "Jerk"]
+                                            delegate: Label { required property string modelData; text: modelData; color: "#7E8F9C"; font.pixelSize: 11 }
+                                        }
+                                        Repeater {
+                                            model: perceptionScroll.t.joints ? perceptionScroll.t.joints.items : []
+                                            delegate: Repeater {
+                                                required property var modelData
+                                                model: [modelData.name, root.fmt(modelData.position, 3), root.fmt(modelData.velocity, 3), root.fmt(modelData.acceleration, 2), root.fmt(modelData.jerk, 1)]
+                                                delegate: Label { required property string modelData; text: modelData; color: "#D9E6EE"; font.family: "monospace"; font.pixelSize: 12 }
+                                            }
+                                        }
+                                    }
+                                    Item { Layout.fillHeight: true }
+                                }
+                            }
+                            Panel {
+                                Layout.fillWidth: true; Layout.preferredWidth: 2; Layout.preferredHeight: 400
+                                ColumnLayout {
+                                    anchors.fill: parent; anchors.margins: 14; spacing: 8
+                                    SectionTitle { text: "End effector & audio" }
+                                    RowLayout {
+                                        spacing: 18
+                                        Metric { label: "Speed m/s"; value: root.fmt(perceptionScroll.ee.speed, 3) }
+                                        Metric { label: "Accel m/s²"; value: root.fmt(perceptionScroll.ee.acceleration, 2) }
+                                        Metric { label: "Jerk m/s³"; value: root.fmt(perceptionScroll.ee.jerk, 1) }
+                                    }
+                                    MutedText { text: "End-effector speed (15 s)" }
+                                    Sparkline { Layout.fillWidth: true; values: root.history.ee; lineColor: "#D78BF0" }
+                                    RowLayout {
+                                        Layout.fillWidth: true; Layout.fillHeight: true; spacing: 12
+                                        Canvas {
+                                            id: polar
+                                            Layout.preferredWidth: 150; Layout.preferredHeight: 150
+                                            property var sources: perceptionScroll.t.audio ? perceptionScroll.t.audio.sources : []
+                                            onSourcesChanged: requestPaint()
+                                            onPaint: {
+                                                let ctx = getContext("2d"); ctx.reset()
+                                                let cx = width / 2, cy = height / 2, r = Math.min(cx, cy) - 6
+                                                ctx.strokeStyle = "#263746"; ctx.lineWidth = 1
+                                                for (let k = 1; k <= 3; ++k) { ctx.beginPath(); ctx.arc(cx, cy, r * k / 3, 0, 2 * Math.PI); ctx.stroke() }
+                                                ctx.beginPath(); ctx.moveTo(cx - r, cy); ctx.lineTo(cx + r, cy); ctx.moveTo(cx, cy - r); ctx.lineTo(cx, cy + r); ctx.stroke()
+                                                for (let s of sources) {
+                                                    // radius shrinks with elevation: horizon on the rim, zenith at the centre
+                                                    let rr = r * (1 - Math.max(0, s.elevation_deg) / 90)
+                                                    let a = s.azimuth_deg * Math.PI / 180
+                                                    ctx.fillStyle = Qt.rgba(0.34, 0.79, 0.83, 0.35 + 0.65 * Math.min(1, s.activity))
+                                                    ctx.beginPath(); ctx.arc(cx + rr * Math.cos(a), cy - rr * Math.sin(a), 4 + 6 * Math.min(1, s.activity), 0, 2 * Math.PI); ctx.fill()
+                                                }
+                                            }
+                                        }
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            MutedText { text: "ODAS tracked sources" }
+                                            MutedText { text: root.fmt(perceptionScroll.t.audio ? perceptionScroll.t.audio.rate_hz : NaN, 0) + " Hz · " + (polar.sources || []).length + " active" }
+                                            MutedText { Layout.fillWidth: true; wrapMode: Text.Wrap; text: "Top view: azimuth around, elevation toward the centre; dot size = activity." }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Item { Layout.preferredHeight: 10 }
                     }
                 }
 
@@ -503,7 +869,6 @@ ApplicationWindow {
                                 anchors.fill: parent; anchors.margins: 18; spacing: 14
                                 ColumnLayout {
                                     SectionTitle { text: "Operating profile" }
-                                    MutedText { text: "Profiles restore configuration only—never motion." }
                                 }
                                 Item { Layout.fillWidth: true }
                                 ComboBox {
@@ -531,7 +896,7 @@ ApplicationWindow {
                                     onActivated: root.controller.setOption("execution_target", currentText)
                                 }
                                 MutedText {
-                                    text: root.profile.execution_target === "remote" ? "Tracking continues if this laptop disconnects." : "Processes run on this laptop."
+                                    text: root.profile.execution_target === "remote" ? "Tracking continues if this laptop disconnects." : "Processes run on this machine."
                                     Layout.columnSpan: 2
                                     color: root.profile.execution_target === "remote" ? "#D8A65A" : "#8FA5B8"
                                 }
@@ -591,53 +956,103 @@ ApplicationWindow {
                         RowLayout {
                             Layout.fillWidth: true; spacing: 16
                             Panel {
-                                Layout.fillWidth: true; Layout.preferredHeight: 450
-                                GridLayout {
-                                    anchors.fill: parent; anchors.margins: 18; columns: 2; columnSpacing: 24; rowSpacing: 13
-                                    SectionTitle { text: "Pipeline"; Layout.columnSpan: 2 }
-                                    CheckBox { text: "Audio / ODAS"; checked: root.profile.audio_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("audio_enabled", checked) }
-                                    CheckBox { text: "Isaac YOLO"; checked: root.profile.yolo_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("yolo_enabled", checked) }
-                                    CheckBox { text: "MobileNetV2"; checked: root.profile.mobilenetv2_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("mobilenetv2_enabled", checked) }
-                                    CheckBox {
-                                        text: "MobileNetV2 → EKF"
-                                        checked: root.profile.mobilenetv2_ekf_enabled
-                                        enabled: !root.controller.runActive && root.profile.mobilenetv2_enabled && root.profile.fusion_enabled
-                                        onToggled: root.controller.setOption("mobilenetv2_ekf_enabled", checked)
+                                Layout.fillWidth: true; Layout.preferredHeight: 470
+                                ColumnLayout {
+                                    anchors.fill: parent; anchors.margins: 18; spacing: 10
+                                    SectionTitle { text: "Pipeline" }
+
+                                    Label { text: "Audio"; color: "#67DFE7"; font.bold: true }
+                                    MutedText { text: "ODAS (UMA16 microphone array) always runs." }
+                                    RowLayout {
+                                        spacing: 18
+                                        CheckBox { text: "MobileNetV2"; checked: root.profile.mobilenetv2_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("mobilenetv2_enabled", checked) }
+                                        CheckBox { text: "AST"; checked: root.profile.ast_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("ast_enabled", checked) }
+                                        CheckBox { text: "GRE"; checked: root.profile.gre_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("gre_enabled", checked) }
                                     }
-                                    CheckBox { text: "AST"; checked: root.profile.ast_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("ast_enabled", checked) }
-                                    CheckBox { text: "GRE"; checked: root.profile.gre_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("gre_enabled", checked) }
-                                    CheckBox { text: "EKF fusion"; checked: root.profile.fusion_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("fusion_enabled", checked) }
-                                    CheckBox { text: root.profile.yolo_enabled ? "Record run (raw camera: always on)" : "Record run"; checked: root.profile.recording_enabled || root.profile.yolo_enabled; enabled: !root.controller.runActive && !root.profile.yolo_enabled; onToggled: root.controller.setOption("recording_enabled", checked) }
-                                    CheckBox { text: "Diagnostics"; checked: root.profile.diagnostics_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("diagnostics_enabled", checked) }
-                                    MutedText { text: "YOLO model"; Layout.columnSpan: 2 }
+
+                                    Rectangle { Layout.fillWidth: true; height: 1; color: "#263746" }
+                                    Label { text: "Visual"; color: "#67DFE7"; font.bold: true }
+                                    CheckBox { text: "YOLO"; checked: root.profile.yolo_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("yolo_enabled", checked) }
                                     ComboBox {
                                         id: yoloModelChoice
-                                        Layout.columnSpan: 2; Layout.fillWidth: true
-                                        enabled: !root.controller.runActive && root.profile.yolo_enabled
-                                        property var ids: ["auto"].concat((root.setup.models || []).filter(m => m.ready).map(m => m.id))
-                                        model: ids.map(id => id === "auto"
-                                            ? "Auto: " + (root.setup.auto ? "newest ready (" + root.setup.auto + ")" : "no model ready on this GPU")
-                                            : id)
+                                        Layout.fillWidth: true
+                                        visible: root.profile.yolo_enabled
+                                        enabled: !root.controller.runActive
+                                        property var ready: (root.setup.models || []).filter(m => m.ready)
+                                        property var autoModel: ready.find(m => m.id === root.setup.auto)
+                                        property var ids: ["auto"].concat(ready.map(m => m.id))
+                                        model: ["Newest" + (autoModel ? " · " + autoModel.experiment + " " + autoModel.date : "")]
+                                               .concat(ready.map(m => m.experiment + " " + m.date))
                                         currentIndex: Math.max(0, ids.indexOf(root.profile.yolo_model))
                                         onActivated: (index) => root.controller.setOption("yolo_model", ids[index])
                                     }
+                                    MutedText {
+                                        visible: root.profile.yolo_enabled && (root.setup.models || []).some(m => !m.ready && !m.legacy)
+                                        text: "Models without a TensorRT build for this GPU are in Setup & builds."
+                                    }
+
+                                    Rectangle { Layout.fillWidth: true; height: 1; color: "#263746" }
+                                    Label { text: "Fusion"; color: "#67DFE7"; font.bold: true }
+                                    MutedText {
+                                        Layout.fillWidth: true; wrapMode: Text.Wrap
+                                        property var inputs: [root.profile.yolo_enabled ? "YOLO" : "", root.profile.mobilenetv2_enabled ? "MobileNetV2" : ""].filter(x => x)
+                                        text: inputs.length ? "EKF fuses " + inputs.join(" + ") + "." : "EKF has no input: turn on YOLO or MobileNetV2."
+                                        color: inputs.length ? "#C8D7E0" : "#E8C468"
+                                    }
+                                    MutedText { text: "Raw camera and audio are always recorded."; }
+                                    Item { Layout.fillHeight: true }
                                 }
                             }
                             Panel {
-                                Layout.fillWidth: true; Layout.preferredHeight: 390
+                                Layout.fillWidth: true; Layout.preferredHeight: 470
                                 GridLayout {
                                     anchors.fill: parent; anchors.margins: 18; columns: 2; columnSpacing: 18; rowSpacing: 12
                                     SectionTitle { text: "Robot and tracking"; Layout.columnSpan: 2 }
-                                    MutedText { text: "Hardware" }
-                                    ComboBox { model: ["mock", "real"]; currentIndex: root.profile.hardware_mode === "real" ? 1 : 0; enabled: !root.controller.runActive; onActivated: root.controller.setOption("hardware_mode", currentText) }
+                                    MutedText { text: "Arms" }
+                                    ComboBox {
+                                        Layout.fillWidth: true
+                                        model: ["Mock", "Real FAIRINO cobots"]
+                                        currentIndex: root.profile.hardware_mode === "real" ? 1 : 0
+                                        enabled: !root.controller.runActive
+                                        onActivated: (index) => root.controller.setOption("hardware_mode", index === 1 ? "real" : "mock")
+                                    }
                                     MutedText { text: "Cobot configuration" }
                                     Switch { text: "Two cobots"; checked: root.profile.dual_arm; enabled: !root.controller.runActive; onToggled: root.controller.setOption("dual_arm", checked) }
-                                    MutedText { text: root.profile.dual_arm ? "Left cobot IP" : "Cobot IP" }
-                                    TextField { text: root.profile.dual_arm ? root.profile.left_robot_ip : root.profile.robot_ip; enabled: !root.controller.runActive; onEditingFinished: root.controller.setOption(root.profile.dual_arm ? "left_robot_ip" : "robot_ip", text) }
-                                    MutedText { visible: root.profile.dual_arm; text: "Right cobot IP" }
-                                    TextField { visible: root.profile.dual_arm; text: root.profile.right_robot_ip; enabled: !root.controller.runActive; onEditingFinished: root.controller.setOption("right_robot_ip", text) }
-                                    MutedText { text: "Tracking source" }
-                                    ComboBox { id: modeBox; model: ["off", "direct_yolo", "direct_mobilenetv2", "direct_ast", "direct_gre", "direct_either", "ekf"]; currentIndex: model.indexOf(root.profile.tracking_mode); onActivated: root.controller.setOption("tracking_mode", currentText) }
+                                    MutedText { visible: root.profile.hardware_mode === "real"; text: root.profile.dual_arm ? "Left cobot IP" : "Cobot IP" }
+                                    TextField { visible: root.profile.hardware_mode === "real"; text: root.profile.dual_arm ? root.profile.left_robot_ip : root.profile.robot_ip; enabled: !root.controller.runActive; onEditingFinished: root.controller.setOption(root.profile.dual_arm ? "left_robot_ip" : "robot_ip", text) }
+                                    MutedText { visible: root.profile.hardware_mode === "real" && root.profile.dual_arm; text: "Right cobot IP" }
+                                    TextField { visible: root.profile.hardware_mode === "real" && root.profile.dual_arm; text: root.profile.right_robot_ip; enabled: !root.controller.runActive; onEditingFinished: root.controller.setOption("right_robot_ip", text) }
+                                    CalmButton { visible: root.profile.hardware_mode === "real"; text: "Check connection"; onClicked: root.controller.checkRobots() }
+                                    ColumnLayout {
+                                        visible: root.profile.hardware_mode === "real"
+                                        Layout.fillWidth: true; spacing: 2
+                                        Repeater {
+                                            model: Object.keys(root.robotCheck)
+                                            delegate: Label {
+                                                required property string modelData
+                                                property var result: root.robotCheck[modelData]
+                                                Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 12
+                                                text: result.ip + ": " + (result.state === "checking" ? "checking…" : result.detail)
+                                                color: result.state === "ok" ? "#5BD08A" : (result.state === "checking" ? "#93A7B8" : (result.state === "warning" ? "#E8C468" : "#FF8992"))
+                                            }
+                                        }
+                                        MutedText { visible: Object.keys(root.robotCheck).length === 0; text: "Ping + FAIRINO port 20003. Safe while running." }
+                                    }
+                                    MutedText { text: "Arms follow" }
+                                    ComboBox {
+                                        id: modeBox
+                                        Layout.fillWidth: true
+                                        enabled: !root.controller.runActive
+                                        property var choices: [["ekf", "Fused direction (EKF)"], ["off", "Nothing (observe only)"]]
+                                            .concat(root.profile.yolo_enabled ? [["direct_yolo", "YOLO only"]] : [])
+                                            .concat(root.profile.mobilenetv2_enabled ? [["direct_mobilenetv2", "MobileNetV2 only"]] : [])
+                                            .concat(root.profile.ast_enabled ? [["direct_ast", "AST only"]] : [])
+                                            .concat(root.profile.gre_enabled ? [["direct_gre", "GRE only"]] : [])
+                                            .concat(root.profile.ast_enabled && root.profile.gre_enabled ? [["direct_either", "AST or GRE"]] : [])
+                                        model: choices.map(choice => choice[1])
+                                        currentIndex: Math.max(0, choices.findIndex(choice => choice[0] === root.profile.tracking_mode))
+                                        onActivated: (index) => root.controller.setOption("tracking_mode", choices[index][0])
+                                    }
                                     MutedText { text: "Use RViz" }
                                     Switch { checked: root.profile.use_rviz; onToggled: root.controller.setOption("use_rviz", checked) }
                                     MutedText { text: "MoveIt" }
@@ -691,25 +1106,52 @@ ApplicationWindow {
                             }
                         }
                         Panel {
-                            Layout.fillWidth: true; Layout.preferredHeight: 165
-                            RowLayout {
-                                anchors.fill: parent; anchors.margins: 18; spacing: 12
-                                ColumnLayout {
-                                    Layout.preferredWidth: 260
-                                    SectionTitle { text: "All launch overrides" }
-                                    MutedText { text: "Search any argument declared by arm_demo.launch.py and apply a string override." }
+                            id: advancedPanel
+                            property bool open: false
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: advancedColumn.implicitHeight + 36
+                            ColumnLayout {
+                                id: advancedColumn
+                                anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 18
+                                spacing: 10
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    ColumnLayout {
+                                        Layout.fillWidth: true; spacing: 2
+                                        SectionTitle { text: "Advanced launch settings" }
+                                        MutedText {
+                                            Layout.fillWidth: true; wrapMode: Text.Wrap
+                                            text: Object.keys(root.profile.expert_arguments || {}).length
+                                                  ? Object.keys(root.profile.expert_arguments).length + " changed from the defaults (saved with the profile)."
+                                                  : "Every launch setting not shown above (EKF gates, microphone angles, ...). Nothing changed."
+                                        }
+                                    }
+                                    CalmButton { text: advancedPanel.open ? "Hide" : "Show"; onClicked: advancedPanel.open = !advancedPanel.open }
                                 }
-                                ComboBox {
-                                    id: expertName
-                                    Layout.preferredWidth: 270
-                                    editable: true
-                                    model: root.controller.launchArgumentNames
+                                Repeater {
+                                    model: Object.keys(root.profile.expert_arguments || {})
+                                    delegate: RowLayout {
+                                        required property string modelData
+                                        Layout.fillWidth: true; spacing: 10
+                                        Label { text: modelData + " = " + root.profile.expert_arguments[modelData]; color: "#D9E6EE"; font.family: "monospace"; Layout.fillWidth: true }
+                                        CalmButton { text: "Remove"; implicitHeight: 32; enabled: !root.controller.runActive; onClicked: root.controller.removeExpertOption(modelData) }
+                                    }
                                 }
-                                TextField { id: expertValue; Layout.fillWidth: true; placeholderText: "Override value" }
-                                CalmButton {
-                                    text: "Apply"
-                                    enabled: !root.controller.runActive && expertName.editText.length > 0 && expertValue.text.length > 0
-                                    onClicked: root.controller.setExpertOption(expertName.editText, expertValue.text)
+                                RowLayout {
+                                    visible: advancedPanel.open
+                                    Layout.fillWidth: true; spacing: 12
+                                    ComboBox {
+                                        id: expertName
+                                        Layout.preferredWidth: 320
+                                        editable: true
+                                        model: root.controller.launchArgumentNames
+                                    }
+                                    TextField { id: expertValue; Layout.fillWidth: true; placeholderText: "New value" }
+                                    CalmButton {
+                                        text: "Set"
+                                        enabled: !root.controller.runActive && expertName.editText.length > 0 && expertValue.text.length > 0
+                                        onClicked: root.controller.setExpertOption(expertName.editText, expertValue.text)
+                                    }
                                 }
                             }
                         }
@@ -764,8 +1206,11 @@ ApplicationWindow {
                         RowLayout {
                             Layout.fillWidth: true; spacing: 10
                             SectionTitle { text: "Logs" }
-                            MutedText { text: "Session: " + root.controller.sessionLogDirectory; elide: Text.ElideMiddle; Layout.fillWidth: true }
-                            CalmButton { text: "Open session folder"; onClicked: root.controller.openSessionFolder() }
+                            MutedText {
+                                Layout.fillWidth: true; elide: Text.ElideMiddle
+                                text: root.controller.runDirectory ? "Current run: " + root.controller.runDirectory : "Outside runs: " + root.controller.sessionLogDirectory
+                            }
+                            CalmButton { text: root.controller.runDirectory ? "Open run folder" : "Open logs folder"; onClicked: root.controller.openSessionFolder() }
                         }
                         RowLayout {
                             Layout.fillWidth: true; spacing: 6
@@ -864,6 +1309,130 @@ ApplicationWindow {
                                         text: html; textFormat: Text.StyledText
                                         color: severity === "error" ? "#FF8992" : (severity === "warning" ? "#E8C468" : "#C8D7E0")
                                         font.family: "monospace"; font.pixelSize: 12
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Processes
+                Item {
+                    Timer {
+                        interval: 3000; repeat: true; triggeredOnStart: true
+                        running: root.pageNames[root.currentPage] === "Processes"
+                        onTriggered: root.controller.refreshProcesses()
+                    }
+                    ColumnLayout {
+                        anchors.fill: parent; anchors.margins: 22; spacing: 12
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 10
+                            ColumnLayout {
+                                Layout.fillWidth: true; spacing: 2
+                                SectionTitle { text: "Everything DracoViLoc is running on this machine" }
+                                MutedText { Layout.fillWidth: true; wrapMode: Text.Wrap; text: "Includes processes started from a terminal. Stop = Ctrl+C, then SIGTERM, then SIGKILL, with children; Kill = SIGKILL now. Anything that survives is listed below with the reason." }
+                            }
+                            CalmButton { text: "Open RViz"; onClicked: root.controller.openRviz() }
+                            SafetyButton {
+                                text: "Clean up everything"
+                                onClicked: root.controller.cleanUpEverything()
+                            }
+                        }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            visible: (root.processList.report || []).length > 0
+                            implicitHeight: reportColumn.implicitHeight + 16
+                            radius: 9; color: "#121C26"; border.color: "#1E2C39"
+                            ColumnLayout {
+                                id: reportColumn
+                                anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 8
+                                Repeater {
+                                    model: root.processList.report || []
+                                    delegate: Label {
+                                        required property string modelData
+                                        Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 12; font.family: "monospace"
+                                        text: modelData
+                                        color: modelData.indexOf("STILL RUNNING") >= 0 || modelData.indexOf("failed") >= 0 ? "#FF8992" : "#5BD08A"
+                                    }
+                                }
+                            }
+                        }
+                        MutedText {
+                            visible: (root.processList.items || []).length === 0
+                            text: root.processList.scanning ? "Scanning…" : "Nothing DracoViLoc-related is running."
+                        }
+                        ScrollView {
+                            Layout.fillWidth: true; Layout.fillHeight: true
+                            contentWidth: availableWidth
+                            ColumnLayout {
+                                width: parent.width; spacing: 8
+                                Repeater {
+                                    model: root.processList.items || []
+                                    delegate: Rectangle {
+                                        id: processCard
+                                        required property var modelData
+                                        property bool running: modelData.state !== "stopped"
+                                        property bool expanded: false
+                                        Layout.fillWidth: true
+                                        implicitHeight: processColumn.implicitHeight + 20
+                                        radius: 10; color: "#131E29"
+                                        border.color: modelData.managed ? "#1E2C39" : "#5A4A2A"
+                                        ColumnLayout {
+                                            id: processColumn
+                                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 10
+                                            spacing: 4
+                                            RowLayout {
+                                                Layout.fillWidth: true; spacing: 10
+                                                StatusDot { healthy: processCard.running }
+                                                ColumnLayout {
+                                                    Layout.fillWidth: true; spacing: 1
+                                                    Label {
+                                                        text: processCard.modelData.name + (processCard.modelData.pid ? "  · pid " + processCard.modelData.pid : "")
+                                                        color: "#EEF5F8"; font.bold: true
+                                                    }
+                                                    MutedText {
+                                                        Layout.fillWidth: true; elide: Text.ElideRight
+                                                        text: (processCard.modelData.kind === "container" ? "Docker container" : (processCard.modelData.kind === "unit" ? "Started by this GUI" : (processCard.modelData.managed ? "Part of a GUI unit" : "Started outside the GUI")))
+                                                              + " · " + processCard.modelData.state
+                                                              + (processCard.modelData.children && processCard.modelData.children.length ? " · " + processCard.modelData.children.length + " processes" : "")
+                                                              + (processCard.modelData.memory_mb ? " · " + root.fmt(processCard.modelData.memory_mb, 0) + " MB" : "")
+                                                        color: processCard.modelData.managed ? "#8FA5B8" : "#E8C468"
+                                                    }
+                                                }
+                                                CalmButton {
+                                                    visible: (processCard.modelData.children || []).length > 0
+                                                    text: processCard.expanded ? "Hide" : "Show processes"
+                                                    onClicked: processCard.expanded = !processCard.expanded
+                                                }
+                                                CalmButton {
+                                                    visible: processCard.modelData.restartable === true
+                                                    text: processCard.running ? "Restart" : "Start again"
+                                                    onClicked: root.controller.restartUnit(processCard.modelData.name)
+                                                }
+                                                CalmButton {
+                                                    visible: processCard.running
+                                                    text: "Stop"
+                                                    onClicked: root.stopItem(processCard.modelData.id, processCard.modelData.name, false)
+                                                }
+                                                SafetyButton {
+                                                    visible: processCard.running
+                                                    text: "Kill"
+                                                    onClicked: root.stopItem(processCard.modelData.id, processCard.modelData.name, true)
+                                                }
+                                            }
+                                            Repeater {
+                                                model: processCard.expanded ? processCard.modelData.children : []
+                                                delegate: RowLayout {
+                                                    id: childRow
+                                                    required property var modelData
+                                                    Layout.fillWidth: true; spacing: 8
+                                                    Label { text: childRow.modelData.name; color: "#C8D7E0"; font.family: "monospace"; Layout.preferredWidth: 260; elide: Text.ElideRight }
+                                                    MutedText { text: "pid " + childRow.modelData.pid + " · " + childRow.modelData.state + " · " + root.fmt(childRow.modelData.memory_mb, 0) + " MB"; Layout.fillWidth: true }
+                                                    CalmButton { text: "Stop"; implicitHeight: 32; onClicked: root.stopItem("pid:" + childRow.modelData.pid, childRow.modelData.name, false) }
+                                                    SafetyButton { text: "Kill"; implicitHeight: 32; onClicked: root.stopItem("pid:" + childRow.modelData.pid, childRow.modelData.name, true) }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1137,33 +1706,6 @@ ApplicationWindow {
         }
     }
 
-    Dialog {
-        id: homeDialog; modal: true; anchors.centerIn: parent; title: "Confirm homing"
-        onOpened: root.controller.uiEvent("dialog_opened", title)
-        onRejected: root.controller.uiEvent("dialog_cancelled", title)
-        width: 500
-        standardButtons: Dialog.Ok | Dialog.Cancel
-        onAccepted: root.controller.requestHome()
-        contentItem: MutedText { text: root.profile.dual_arm ? "Confirm both cobot workspaces are clear and both emergency stops are within reach. Both cobots will move together to their home poses." : "Confirm the workspace is clear and the physical emergency stop is within reach. The arm will move to its home pose."; width: 430 }
-    }
-    Dialog {
-        id: trackingDialog; modal: true; anchors.centerIn: parent; title: "Enable tracking"
-        onOpened: root.controller.uiEvent("dialog_opened", title)
-        onRejected: root.controller.uiEvent("dialog_cancelled", title)
-        width: 500
-        standardButtons: Dialog.Ok | Dialog.Cancel
-        onAccepted: root.controller.enableTracking()
-        contentItem: MutedText { text: root.profile.dual_arm ? "Tracking will use the configured coordination policy and command joints 1 and 4 on both cobots. Keep both workspaces clear." : "Tracking will wait for a fresh detector direction, then command joints 1 and 4. Keep the workspace clear."; width: 430 }
-    }
-    Dialog {
-        id: stopAllDialog; modal: true; anchors.centerIn: parent; title: "Stop the complete run?"
-        onOpened: root.controller.uiEvent("dialog_opened", title)
-        onRejected: root.controller.uiEvent("dialog_cancelled", title)
-        width: 500
-        standardButtons: Dialog.Ok | Dialog.Cancel
-        onAccepted: root.controller.stopAll()
-        contentItem: MutedText { text: "Tracking will stop first. Recorders will then finalize before the host stack and YOLO container are stopped."; width: 430 }
-    }
     Dialog {
         id: closeDialog; modal: true; anchors.centerIn: parent; title: "Close control center?"
         onOpened: root.controller.uiEvent("dialog_opened", title)

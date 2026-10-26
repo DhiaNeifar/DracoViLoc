@@ -52,7 +52,9 @@ class RunProfile:
     diagnostics_enabled: bool = True
     first_arrival_mode: str = "off"
     recording_root: str = "~/DracoViLoc/runs"
-    recording_video_topic: str = "/image"
+    # Raw camera image (never the overlay). The JPEG stream arrives complete at
+    # full rate over the UDP transport; "/image" is accepted too.
+    recording_video_topic: str = "/image/compressed"
     # "auto" lets the launch pick the engine built for this machine's GPU and
     # an interpreter with TensorRT + PyCUDA (see host_platform.py).
     mobilenetv2_engine_path: str = "auto"
@@ -93,7 +95,17 @@ class RunProfile:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RunProfile":
         allowed = cls.__dataclass_fields__.keys()
-        return cls(**{key: value for key, value in data.items() if key in allowed})
+        return cls(**{key: value for key, value in data.items() if key in allowed}).apply_rules()
+
+    def apply_rules(self) -> "RunProfile":
+        """Fixed pipeline rules: ODAS and the EKF always run, the EKF fuses
+        exactly the detectors that are on, and everything is recorded."""
+        self.audio_enabled = True
+        self.fusion_enabled = True
+        self.mobilenetv2_ekf_enabled = self.mobilenetv2_enabled
+        self.recording_enabled = True
+        self.diagnostics_enabled = True
+        return self
 
 
 @dataclass(slots=True)

@@ -4,6 +4,7 @@ import argparse
 import math
 import signal
 import sys
+import time
 
 import numpy as np
 import rclpy
@@ -14,6 +15,11 @@ from rclpy.time import Time
 from audio_utils_msgs.msg import AudioFrame
 from geometry_msgs.msg import Vector3Stamped
 from odas_ros_msgs.msg import OdasSstArrayStamped
+
+try:  # diagnostics are optional: the classifier must run without them
+    from dracoviloc_msgs.msg import ClassifierWindow
+except ImportError:  # pragma: no cover - older workspaces
+    ClassifierWindow = None
 
 from processing import BearingGate, ChannelState, INPUT_RATE, decode_audio
 
@@ -43,6 +49,9 @@ class MobileNetV2Classifier(Node):
                 self.engine = TrtEngine(args.engine_path)
             qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
             self.publisher = self.create_publisher(Vector3Stamped, '/mobilenetv2/direction', qos)
+            self.diagnostics = (self.create_publisher(
+                ClassifierWindow, '/mobilenetv2/diagnostics', 50)
+                if ClassifierWindow is not None else None)
             self.create_subscription(OdasSstArrayStamped, '/sst', self._sst_cb, qos)
             self.create_subscription(AudioFrame, '/sss', self._audio_cb, qos)
             self.create_timer(5.0, self._status)
@@ -124,10 +133,14 @@ class MobileNetV2Classifier(Node):
                     self.dropped_audio += 1
                     state.reset()
                     break
+                started = time.perf_counter()
                 probability = float(self.engine.infer(waveform)[1])
+                inference_ms = (time.perf_counter() - started) * 1000.0
                 decision = state.vote(probability)
                 self.windows_done += 1
                 source = self._source(channel)
+                self._publish_window(channel, source, window_end, probability, decision,
+                                     state, fresh, inference_ms)
                 self.get_logger().info(
                     f'MobileNetV2 confidence={probability:.3f} '
                     f'decision={"DRONE" if decision else "not-drone"} '
@@ -159,6 +172,27 @@ class MobileNetV2Classifier(Node):
                 out.header.stamp = Time(seconds=window_end).to_msg()
                 out.vector.x, out.vector.y, out.vector.z = map(float, direction / norm)
                 self.publisher.publish(out)
+
+    def _publish_window(self, channel, source, window_end, probability, decision,
+                        state, actionable, inference_ms):
+        """Diagnostics only: one message per inference window."""
+        publisher = getattr(self, 'diagnostics', None)
+        if publisher is None:
+            return
+        msg = ClassifierWindow()
+        msg.header.stamp = Time(seconds=window_end).to_msg()
+        msg.header.frame_id = self.latest_sst.header.frame_id if self.latest_sst else ''
+        msg.channel = channel
+        msg.track_id = int(source.id) if source is not None else 0
+        msg.activity = float(source.activity) if source is not None else 0.0
+        msg.probability = probability
+        msg.vote = bool(state.votes and state.votes[-1])
+        msg.votes = int(sum(state.votes))
+        msg.vote_window = int(state.vote_window)
+        msg.decision = bool(decision)
+        msg.actionable = bool(actionable)
+        msg.inference_ms = float(inference_ms)
+        publisher.publish(msg)
 
     def _status(self):
         self.get_logger().info(

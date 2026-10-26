@@ -1,13 +1,22 @@
-"""Durable session log for the control center.
+"""Durable logging for the control center.
 
-Each GUI session writes to <runs>/logs/<YYYY-MM-DD_HH-MM-SS>/:
+Two places, nothing nested:
 
-    session.json        machine, git revision, GUI version, start/end time
-    events.jsonl        one JSON object per line: operator actions, state
-                        changes, process lifecycle, messages and errors
-    processes/          full terminal output of every process and job
-                        (<name>_<HH-MM-SS>.log + .status.json)
-    runs/               profile and launch command of every run started
+* ``runs/<YYYY-MM-DD_HH-MM-SS>/`` - one folder per run, holding everything
+  that run produced:
+
+      run.json         profile, exact commands, machine, git revision,
+                       start/end time and outcome
+      events.jsonl     operator actions, state changes and process events
+                       during the run
+      processes/       full terminal output of host, YOLO, ... (+ .status.json)
+      video/ audio/    recordings (uploaded to Google Drive)
+      telemetry.jsonl, bag/, diagnostics/   written by the ROS side
+
+* ``logs/`` - activity outside runs (no experiment data):
+
+      <YYYY-MM-DD>.jsonl   every event of every GUI session that day
+      jobs/                terminal output of setup & build jobs
 
 Every event is flushed to the OS immediately. Actions, state changes,
 process events and errors are also fsync'ed, so they survive a crash or a
@@ -31,6 +40,7 @@ from . import __version__
 
 DURABLE_KINDS = {"action", "state", "process", "run", "session"}
 FSYNC_INTERVAL_S = 1.0
+RUN_NAME_FORMAT = "%Y-%m-%d_%H-%M-%S"
 
 
 def now_iso() -> str:
@@ -47,25 +57,46 @@ def _git(project_root: Path, *args: str) -> str:
         return ""
 
 
+def _unique(path: Path) -> Path:
+    """path, or path_2.ext, path_3.ext, ... if it exists."""
+    candidate, suffix = path, 1
+    while candidate.exists():
+        suffix += 1
+        candidate = path.with_name(f"{path.stem}_{suffix}{path.suffix}")
+    return candidate
+
+
+class _JsonlFile:
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        self.stream = open(path, "a", encoding="utf-8")
+        self.last_fsync = time.monotonic()
+
+    def write(self, line: str, durable: bool) -> None:
+        self.stream.write(line + "\n")
+        self.stream.flush()
+        if durable or time.monotonic() - self.last_fsync >= FSYNC_INTERVAL_S:
+            os.fsync(self.stream.fileno())
+            self.last_fsync = time.monotonic()
+
+    def close(self) -> None:
+        if not self.stream.closed:
+            os.fsync(self.stream.fileno())
+            self.stream.close()
+
+
 class SessionLog:
-    def __init__(self, runs_root: Path, project_root: Path) -> None:
-        started = datetime.now()
-        self.directory = Path(runs_root).expanduser() / "logs" / started.strftime("%Y-%m-%d_%H-%M-%S")
-        suffix = 1
-        while self.directory.exists():
-            suffix += 1
-            self.directory = self.directory.with_name(
-                started.strftime("%Y-%m-%d_%H-%M-%S") + f"_{suffix}")
-        self.processes_directory = self.directory / "processes"
-        self.runs_directory = self.directory / "runs"
-        self.processes_directory.mkdir(parents=True)
-        self.runs_directory.mkdir()
+    def __init__(self, logs_root: Path, project_root: Path) -> None:
+        self.directory = Path(logs_root).expanduser()
+        self.jobs_directory = self.directory / "jobs"
+        self.jobs_directory.mkdir(parents=True, exist_ok=True)
+        self.project_root = project_root
+        self.run_directory: Path | None = None
         self._lock = threading.Lock()
-        self._events = open(self.directory / "events.jsonl", "a", encoding="utf-8")
-        self._last_fsync = time.monotonic()
-        self._metadata = {
-            "started_at": now_iso(),
-            "ended_at": None,
+        self._daily: _JsonlFile | None = None
+        self._run_events: _JsonlFile | None = None
+        self.machine = {
             "host": socket.gethostname(),
             "user": getpass.getuser(),
             "machine": platform.machine(),
@@ -73,18 +104,24 @@ class SessionLog:
             "python": platform.python_version(),
             "gui_version": __version__,
             "project_root": str(project_root),
-            "git_commit": _git(project_root, "rev-parse", "HEAD"),
-            "git_branch": _git(project_root, "rev-parse", "--abbrev-ref", "HEAD"),
-            "git_dirty": bool(_git(project_root, "status", "--porcelain", "--untracked-files=no")),
         }
-        self._write_metadata()
-        self.event("session", "gui", "info", "Session started", self._metadata)
+        self.event("session", "gui", "info", "Session started", {
+            **self.machine, "git": self.git_state()})
 
-    def _write_metadata(self) -> None:
-        path = self.directory / "session.json"
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(self._metadata, indent=2), encoding="utf-8")
-        temporary.replace(path)
+    def git_state(self) -> dict[str, Any]:
+        return {
+            "commit": _git(self.project_root, "rev-parse", "HEAD"),
+            "branch": _git(self.project_root, "rev-parse", "--abbrev-ref", "HEAD"),
+            "dirty": bool(_git(self.project_root, "status", "--porcelain", "--untracked-files=no")),
+        }
+
+    def _daily_file(self) -> _JsonlFile:
+        path = self.directory / f"{datetime.now():%Y-%m-%d}.jsonl"
+        if self._daily is None or self._daily.path != path:  # new day: new file
+            if self._daily is not None:
+                self._daily.close()
+            self._daily = _JsonlFile(path)
+        return self._daily
 
     def event(self, kind: str, subsystem: str, severity: str, message: str,
               data: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -95,37 +132,70 @@ class SessionLog:
         if data:
             record["data"] = data
         line = json.dumps(record, default=str)
+        durable = kind in DURABLE_KINDS or severity in {"error", "warning"}
         with self._lock:
-            if self._events.closed:
-                return record
-            self._events.write(line + "\n")
-            self._events.flush()
-            durable = kind in DURABLE_KINDS or severity in {"error", "warning"}
-            if durable or time.monotonic() - self._last_fsync >= FSYNC_INTERVAL_S:
-                os.fsync(self._events.fileno())
-                self._last_fsync = time.monotonic()
+            self._daily_file().write(line, durable)
+            if self._run_events is not None:
+                self._run_events.write(line, durable)
         return record
 
-    def process_log_paths(self, name: str) -> tuple[Path, Path]:
-        stem = f"{name}_{datetime.now().strftime('%H-%M-%S')}"
-        log = self.processes_directory / f"{stem}.log"
-        suffix = 1
-        while log.exists():
-            suffix += 1
-            log = self.processes_directory / f"{stem}_{suffix}.log"
-        return log, log.with_suffix(".status.json")
+    # -------------------------------------------------------------------- runs
+    def begin_run(self, runs_root: Path) -> Path:
+        """Create runs/<YYYY-MM-DD_HH-MM-SS>/; events are copied there until end_run."""
+        directory = _unique(Path(runs_root).expanduser() / datetime.now().strftime(RUN_NAME_FORMAT))
+        (directory / "processes").mkdir(parents=True)
+        with self._lock:
+            self.run_directory = directory
+            self._run_events = _JsonlFile(directory / "events.jsonl")
+        self.event("run", "gui", "info", "Run folder created", {"run": str(directory)})
+        return directory
 
-    def record_run(self, profile: dict[str, Any], commands: dict[str, list[str]]) -> Path:
-        path = self.runs_directory / f"run_{datetime.now().strftime('%H-%M-%S')}.json"
-        path.write_text(json.dumps({
-            "started_at": now_iso(), "profile": profile, "commands": commands,
-        }, indent=2), encoding="utf-8")
+    def record_run(self, profile: dict[str, Any], commands: dict[str, list[str]],
+                   extra: dict[str, Any] | None = None) -> Path:
+        path = self.run_directory / "run.json"
+        self._write_json(path, {
+            "started_at": now_iso(), "ended_at": None, "outcome": None,
+            "machine": self.machine, "git": self.git_state(),
+            "profile": profile, "commands": commands, **(extra or {}),
+        })
         return path
 
+    def end_run(self, outcome: str) -> None:
+        if self.run_directory is None:
+            return
+        path = self.run_directory / "run.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        data.update(ended_at=now_iso(), outcome=outcome)
+        self._write_json(path, data)
+        self.event("run", "gui", "info", f"Run ended: {outcome}", {"run": str(self.run_directory)})
+        with self._lock:
+            if self._run_events is not None:
+                self._run_events.close()
+            self._run_events = None
+            self.run_directory = None
+
+    @staticmethod
+    def _write_json(path: Path, data: dict[str, Any]) -> None:
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+        temporary.replace(path)
+
+    def process_log_paths(self, name: str) -> tuple[Path, Path]:
+        """Run subsystems log into the run folder; setup jobs into logs/jobs/."""
+        if self.run_directory is not None and not name.startswith("job-"):
+            log = _unique(self.run_directory / "processes" / f"{name}.log")
+        else:
+            log = _unique(self.jobs_directory / f"{datetime.now():{RUN_NAME_FORMAT}}_{name}.log")
+        return log, log.with_suffix(".status.json")
+
     def close(self) -> None:
+        if self.run_directory is not None:
+            self.end_run("gui closed during the run")
         self.event("session", "gui", "info", "Session ended")
         with self._lock:
-            os.fsync(self._events.fileno())
-            self._events.close()
-        self._metadata["ended_at"] = now_iso()
-        self._write_metadata()
+            if self._daily is not None:
+                self._daily.close()
+                self._daily = None

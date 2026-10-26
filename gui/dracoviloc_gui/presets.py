@@ -4,7 +4,7 @@ from .models import RunProfile
 
 
 def built_in_profiles() -> dict[str, RunProfile]:
-    return {
+    profiles = {
         "Mock Observation": RunProfile(),
         "Audio Observation": RunProfile(
             name="Audio Observation", audio_enabled=True,
@@ -43,4 +43,4 @@ def built_in_profiles() -> dict[str, RunProfile]:
             ekf_average_window=10, smoothing_alpha=0.10,
             max_velocity=0.60, max_acceleration=0.80, max_jerk=1.0),
     }
-
+    return {name: profile.apply_rules() for name, profile in profiles.items()}

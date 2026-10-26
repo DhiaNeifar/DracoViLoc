@@ -55,8 +55,8 @@ def validate_profile(profile: RunProfile) -> list[str]:
         errors.append("MobileNetV2 EKF input requires MobileNetV2 and fusion.")
     if profile.yolo_enabled and not profile.recording_enabled:
         errors.append("Raw camera recording is mandatory whenever YOLO/camera is enabled.")
-    if profile.yolo_enabled and profile.recording_video_topic != "/image":
-        errors.append("The camera recording must use the raw /image topic.")
+    if profile.yolo_enabled and profile.recording_video_topic not in {"/image/compressed", "/image"}:
+        errors.append("The camera recording must use the raw camera image (/image/compressed or /image).")
     if profile.recording_enabled and not (profile.audio_enabled or profile.yolo_enabled):
         errors.append("Recording requires audio or YOLO.")
     if profile.first_arrival_mode != "off" and not profile.audio_enabled:
@@ -78,7 +78,7 @@ def validate_profile(profile: RunProfile) -> list[str]:
         if not profile.fusion_enabled:
             errors.append("EKF tracking requires fusion.")
         if not (profile.yolo_enabled or profile.mobilenetv2_ekf_enabled):
-            errors.append("EKF tracking requires YOLO or MobileNetV2 EKF input.")
+            errors.append("Following the fused direction needs YOLO or MobileNetV2 turned on.")
     for name in ("max_velocity", "max_acceleration", "max_jerk", "command_rate_hz"):
         value = getattr(profile, name)
         if not math.isfinite(value) or value <= 0:

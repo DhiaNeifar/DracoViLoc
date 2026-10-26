@@ -58,9 +58,16 @@ class ModelInfo:
     def ready(self) -> bool:
         return self.plan_state == OK
 
+    @property
+    def experiment(self) -> str:
+        """Model id without its date and '_best' suffix, e.g. 'drone_yolo11n'."""
+        name = re.sub(r"_?20\d{6}", "", self.id)
+        return re.sub(r"_best$", "", name) or self.id
+
     def to_dict(self) -> dict:
         data = asdict(self)
         data["ready"] = self.ready
+        data["experiment"] = self.experiment
         return data
 
 
