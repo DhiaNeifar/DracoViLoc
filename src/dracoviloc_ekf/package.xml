@@ -4,7 +4,7 @@
   <description>EKF fusion of normalized DracoViLoc detector directions.</description>
   <maintainer email="maintainer@example.com">DracoViLoc</maintainer><license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
-  <depend>dracoviloc_msgs</depend><depend>geometry_msgs</depend><depend>odas_ros_msgs</depend><depend>rclcpp</depend>
+  <depend>dracoviloc_msgs</depend><depend>geometry_msgs</depend><depend>odas_ros_msgs</depend><depend>rclcpp</depend><depend>tf2_ros</depend>
   <test_depend>ament_cmake_gtest</test_depend>
   <export><build_type>ament_cmake</build_type></export>
 </package>

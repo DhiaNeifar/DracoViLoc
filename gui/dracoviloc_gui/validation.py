@@ -24,6 +24,9 @@ def validate_profile(profile: RunProfile) -> list[str]:
         errors.append("Hardware mode must be mock or real.")
     if profile.visual_detector not in {"yolo", "dfine", "dfine_n"}:
         errors.append("Visual detector must be yolo, dfine or dfine_n.")
+    if (not math.isfinite(profile.yolo_confidence_threshold) or
+            not 0.0 <= profile.yolo_confidence_threshold <= 1.0):
+        errors.append("YOLO confidence threshold must be between 0 and 1.")
     if profile.execution_target == "remote" and profile.yolo_enabled and profile.visual_detector != "yolo":
         errors.append("Remote runs support YOLO only; choose YOLO under Visual.")
     if profile.dual_tracking_policy not in {"first_arm_lead", "simultaneous"}:
@@ -87,6 +90,8 @@ def validate_profile(profile: RunProfile) -> list[str]:
         value = getattr(profile, name)
         if not math.isfinite(value) or value <= 0:
             errors.append(f"{name.replace('_', ' ').title()} must be positive.")
+    if not math.isfinite(profile.min_activity) or not 0.0 <= profile.min_activity <= 1.0:
+        errors.append("Minimum sound activity must be between 0 and 1.")
     if not 0.0 <= profile.smoothing_alpha <= 1.0:
         errors.append("Smoothing alpha must be between 0 and 1.")
     return errors

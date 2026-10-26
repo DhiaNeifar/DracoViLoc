@@ -11,8 +11,9 @@
 // The overlay is drawn here from /detections_output onto the exact camera
 // frame the detections were computed from (matched by header stamp), so boxes
 // never lag the image and the overlay runs at the detection rate. Detection
-// coordinates are in the YOLO encoder's resized image
-// (/yolov8_encoder/resize/camera_info) and are scaled to the raw frame.
+// coordinates are in the detector's encoded image.  Both raw and encoded
+// camera intrinsics are used to undo either YOLO's centred letterbox or
+// D-FINE's stretch before drawing on the raw frame.
 //
 // Raw 640x480 frames are ~1 MB each and the DDS transport here is UDP only,
 // so nothing in the monitoring path touches /image. The GUI receives JPEGs
@@ -30,6 +31,8 @@
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
 #include <vision_msgs/msg/detection2_d_array.hpp>
+
+#include "dracoviloc_monitor/detection_geometry.hpp"
 
 using sensor_msgs::msg::CompressedImage;
 
@@ -52,6 +55,8 @@ public:
       declare_parameter<std::string>("detections_topic", "/detections_output");
     const auto detection_info_topic = declare_parameter<std::string>(
       "detection_camera_info_topic", "/yolov8_encoder/resize/camera_info");
+    const auto raw_info_topic =
+      declare_parameter<std::string>("raw_camera_info_topic", "/camera_info");
     class_names_ = declare_parameter<std::vector<std::string>>("class_names", {"drone"});
     max_fps_ = declare_parameter<double>("max_fps", 15.0);
     max_width_ = declare_parameter<int>("max_width", 960);
@@ -77,8 +82,12 @@ public:
     detection_info_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
       detection_info_topic, rclcpp::SensorDataQoS(),
       [this](sensor_msgs::msg::CameraInfo::ConstSharedPtr info) {
-        detection_width_ = info->width;
-        detection_height_ = info->height;
+        detection_camera_ = geometry(*info);
+      });
+    raw_info_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
+      raw_info_topic, rclcpp::SensorDataQoS(),
+      [this](sensor_msgs::msg::CameraInfo::ConstSharedPtr info) {
+        raw_camera_ = geometry(*info);
       });
     RCLCPP_INFO(get_logger(), "previews of %s (raw) and %s on %s (overlay), <= %.1f fps",
       raw_topic.c_str(), detections_topic.c_str(), raw_topic.c_str(), max_fps_);
@@ -147,17 +156,21 @@ private:
 
   void draw(cv::Mat & canvas, const vision_msgs::msg::Detection2DArray & detections) const
   {
-    const double sx = detection_width_ > 0 ? static_cast<double>(canvas.cols) / detection_width_ : 1.0;
-    const double sy = detection_height_ > 0 ? static_cast<double>(canvas.rows) / detection_height_ : 1.0;
+    if (!raw_camera_.valid() || !detection_camera_.valid()) {
+      throw std::runtime_error("waiting for raw and detection camera_info");
+    }
     const int thickness = std::max(2, (canvas.cols + canvas.rows) / 600);
     for (const auto & detection : detections.detections) {
       const auto & box = detection.bbox;
+      const auto corners = dracoviloc_monitor::detection_box_to_raw(
+        box.center.position.x, box.center.position.y, box.size_x, box.size_y,
+        raw_camera_, detection_camera_);
       const cv::Point top_left(
-        static_cast<int>((box.center.position.x - box.size_x / 2.0) * sx),
-        static_cast<int>((box.center.position.y - box.size_y / 2.0) * sy));
+        static_cast<int>(std::lround(corners.top_left.x)),
+        static_cast<int>(std::lround(corners.top_left.y)));
       const cv::Point bottom_right(
-        static_cast<int>((box.center.position.x + box.size_x / 2.0) * sx),
-        static_cast<int>((box.center.position.y + box.size_y / 2.0) * sy));
+        static_cast<int>(std::lround(corners.bottom_right.x)),
+        static_cast<int>(std::lround(corners.bottom_right.y)));
       cv::rectangle(canvas, top_left, bottom_right, cv::Scalar(0, 255, 0), thickness);
       if (detection.results.empty()) {
         continue;
@@ -176,6 +189,12 @@ private:
       cv::putText(canvas, label, origin, cv::FONT_HERSHEY_SIMPLEX, 0.5,
         cv::Scalar(255, 0, 255), 1, cv::LINE_AA);
     }
+  }
+
+  static dracoviloc_monitor::CameraGeometry geometry(
+    const sensor_msgs::msg::CameraInfo & info)
+  {
+    return {info.width, info.height, info.k[0], info.k[4], info.k[2], info.k[5]};
   }
 
   void publish(rclcpp::Publisher<CompressedImage> & publisher,
@@ -203,7 +222,7 @@ private:
   double max_fps_;
   int max_width_;
   int jpeg_quality_;
-  uint32_t detection_width_{0}, detection_height_{0};
+  dracoviloc_monitor::CameraGeometry raw_camera_, detection_camera_;
   uint64_t failures_{0};
   rclcpp::Clock steady_{RCL_STEADY_TIME};
   Throttle raw_throttle_, overlay_throttle_;
@@ -211,7 +230,8 @@ private:
   rclcpp::Publisher<CompressedImage>::SharedPtr raw_pub_, overlay_pub_;
   rclcpp::Subscription<CompressedImage>::SharedPtr raw_sub_;
   rclcpp::Subscription<vision_msgs::msg::Detection2DArray>::SharedPtr detections_sub_;
-  rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr detection_info_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr
+    detection_info_sub_, raw_info_sub_;
 };
 
 int main(int argc, char ** argv)

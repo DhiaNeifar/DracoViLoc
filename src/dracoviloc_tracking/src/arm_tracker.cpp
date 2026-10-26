@@ -514,14 +514,19 @@ private:
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
       "Received tracking direction on %s: (%.3f, %.3f, %.3f)",
       msg.header.frame_id.c_str(), msg.vector.x, msg.vector.y, msg.vector.z);
-    accept_local_direction(local.normalized(), msg.header.frame_id);
+    accept_local_direction(local.normalized(), msg.header.frame_id, msg.header.stamp);
   }
 
-  void accept_local_direction(const Eigen::Vector3d & local, const std::string & frame_id) {
+  void accept_local_direction(
+    const Eigen::Vector3d & local, const std::string & frame_id,
+    const builtin_interfaces::msg::Time & stamp)
+  {
     const std::string source = frame_id.empty() ? tracking_frame_ : frame_id;
     Eigen::Vector3d world_dir;
     try {
-      const auto tf = tf_buffer_->lookupTransform(world_frame_, source, tf2::TimePointZero);
+      const auto tf = stamp.sec == 0 && stamp.nanosec == 0
+        ? tf_buffer_->lookupTransform(world_frame_, source, tf2::TimePointZero)
+        : tf_buffer_->lookupTransform(world_frame_, source, rclcpp::Time(stamp));
       const auto & q = tf.transform.rotation;
       const Eigen::Quaterniond rotation(q.w, q.x, q.y, q.z);
       world_dir = (rotation * local).normalized();

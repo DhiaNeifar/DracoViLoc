@@ -55,6 +55,14 @@
       <child link="micarray_camera_link"/>
       <origin xyz="${micarray_camera_mount_x} ${micarray_camera_mount_y} ${micarray_camera_mount_z}" rpy="0 0 0"/>
     </joint>
+    <!-- At the home pose this matches the former table_mic_link axes, but
+         follows the wrist when the camera and microphone array move. -->
+    <link name="micarray_direction_link"/>
+    <joint name="micarray_camera_to_direction" type="fixed">
+      <parent link="micarray_camera_link"/>
+      <child link="micarray_direction_link"/>
+      <origin xyz="0 0 0" rpy="0 0 3.141592653589793"/>
+    </joint>
 
     <link name="odas_link">
       <visual>
@@ -137,6 +145,12 @@
       <parent link="left_wrist3_link"/>
       <child link="micarray_camera_link"/>
       <origin xyz="${micarray_camera_mount_x} ${micarray_camera_mount_y} ${micarray_camera_mount_z}" rpy="0 0 0"/>
+    </joint>
+    <link name="micarray_direction_link"/>
+    <joint name="micarray_camera_to_direction" type="fixed">
+      <parent link="micarray_camera_link"/>
+      <child link="micarray_direction_link"/>
+      <origin xyz="0 0 0" rpy="0 0 3.141592653589793"/>
     </joint>
 
     <link name="odas_link">

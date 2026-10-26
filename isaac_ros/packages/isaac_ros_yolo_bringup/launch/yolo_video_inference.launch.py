@@ -20,6 +20,7 @@ def generate_launch_description() -> LaunchDescription:
     input_width = LaunchConfiguration('input_width')
     input_height = LaunchConfiguration('input_height')
     num_blocks = LaunchConfiguration('num_blocks')
+    confidence_threshold = LaunchConfiguration('confidence_threshold')
 
     container = ComposableNodeContainer(
         name='yolo_inference_container',
@@ -49,7 +50,8 @@ def generate_launch_description() -> LaunchDescription:
                 plugin='nvidia::isaac_ros::yolov8::YoloV8DecoderNode',
                 parameters=[{
                     'num_classes': num_classes,
-                    'confidence_threshold': 0.25,
+                    'confidence_threshold': ParameterValue(
+                        confidence_threshold, value_type=float),
                     'nms_threshold': 0.45,
                     'tensor_name': 'output_tensor',
                 }],
@@ -89,6 +91,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('input_width', default_value='640'),
         DeclareLaunchArgument('input_height', default_value='360'),
         DeclareLaunchArgument('num_blocks', default_value='8'),
+        DeclareLaunchArgument('confidence_threshold', default_value='0.25'),
         container,
         encoder_launch,
     ])

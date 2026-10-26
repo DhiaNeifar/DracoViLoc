@@ -6,12 +6,15 @@
 #include <stdexcept>
 #include <string>
 #include <Eigen/Dense>
+#include <Eigen/Geometry>
 #include "dracoviloc_ekf/bearing_continuity_gate.hpp"
 #include "dracoviloc_ekf/direct_path_gate.hpp"
 #include "dracoviloc_msgs/msg/ekf_update.hpp"
 #include "geometry_msgs/msg/vector3_stamped.hpp"
 #include "odas_ros_msgs/msg/odas_ssl_array_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "tf2_ros/buffer.h"
+#include "tf2_ros/transform_listener.h"
 
 class DirectionEkf : public rclcpp::Node {
 public:
@@ -56,14 +59,20 @@ public:
     direct_path_config_.evidence_ttl_s =
       declare_parameter("first_arrival_evidence_ttl_s", 2.0);
     direct_path_gate_ = std::make_unique<dracoviloc_ekf::DirectPathGate>(direct_path_config_);
+    tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
     if (direct_path_mode_ != "off") {
       first_arrival_sub_ = create_subscription<odas_ros_msgs::msg::OdasSslArrayStamped>(
         "/first_arrival/candidates", 10,
         [this](odas_ros_msgs::msg::OdasSslArrayStamped::SharedPtr message) {
           const double timestamp = rclcpp::Time(message->header.stamp).seconds();
           for (const auto & source : message->sources) {
-            direct_path_gate_->observe(
-              Eigen::Vector3d(source.x, source.y, source.z), source.e, timestamp);
+            Eigen::Vector3d bearing(source.x, source.y, source.z);
+            if (!bearing.allFinite() || bearing.norm() < 1e-6 ||
+                !in_tracking_frame(message->header.frame_id, message->header.stamp, bearing)) {
+              continue;
+            }
+            direct_path_gate_->observe(bearing, source.e, timestamp);
           }
         });
     }
@@ -93,6 +102,27 @@ public:
 private:
   using Msg = geometry_msgs::msg::Vector3Stamped;
   using Sub = rclcpp::Subscription<Msg>::SharedPtr;
+  bool in_tracking_frame(
+    const std::string & source_frame, const builtin_interfaces::msg::Time & stamp,
+    Eigen::Vector3d & direction)
+  {
+    const std::string source = source_frame.empty() ? frame_ : source_frame;
+    if (source == frame_) return true;
+    try {
+      // The camera is attached to the wrist. Convert each bearing at the
+      // image timestamp before the EKF combines it with another observation.
+      const auto transform = tf_buffer_->lookupTransform(frame_, source, rclcpp::Time(stamp));
+      const auto & q = transform.transform.rotation;
+      const Eigen::Quaterniond rotation(q.w, q.x, q.y, q.z);
+      if (!rotation.coeffs().allFinite() || rotation.norm() < 1e-6) return false;
+      direction = (rotation.normalized() * direction).normalized();
+      return true;
+    } catch (const std::exception & error) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+        "Waiting for %s -> %s transform: %s", source.c_str(), frame_.c_str(), error.what());
+      return false;
+    }
+  }
   void add_source(
     const char * parameter, const char * topic, const char * noise_parameter,
     bool acoustic, Sub & sub)
@@ -124,6 +154,7 @@ private:
     Eigen::Vector3d z(msg.vector.x, msg.vector.y, msg.vector.z);
     if (!z.allFinite() || z.norm() < 1e-6) return;
     z.normalize();
+    if (!in_tracking_frame(msg.header.frame_id, msg.header.stamp, z)) return;
     const double t = rclcpp::Time(msg.header.stamp).seconds();
     if (!std::isfinite(t)) return;
     const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -264,5 +295,7 @@ private:
   rclcpp::Publisher<Msg>::SharedPtr pub_, legacy_pub_; Sub yolo_,mobilenetv2_;
   rclcpp::Publisher<dracoviloc_msgs::msg::EkfUpdate>::SharedPtr diagnostics_pub_;
   rclcpp::Subscription<odas_ros_msgs::msg::OdasSslArrayStamped>::SharedPtr first_arrival_sub_;
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 };
 int main(int argc,char **argv){rclcpp::init(argc,argv);rclcpp::spin(std::make_shared<DirectionEkf>());rclcpp::shutdown();}

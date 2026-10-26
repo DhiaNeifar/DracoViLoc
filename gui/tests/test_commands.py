@@ -35,6 +35,11 @@ def test_explicit_mobilenet_runtime_is_passed_through():
     assert "mobilenetv2_venv_python:=/opt/python3" in args
 
 
+def test_minimum_sound_activity_reaches_the_launch_unchanged():
+    args = host_launch_arguments(RunProfile(min_activity=0.27))
+    assert "min_activity:=0.27" in args
+
+
 def test_required_dds_environment_is_forced():
     env = runtime_environment({"ROS_DOMAIN_ID": "0"})
     assert env["ROS_DOMAIN_ID"] == "42"
@@ -50,6 +55,13 @@ def test_docker_command_is_named_and_uses_the_profile_image():
     assert any("yolo_camera.launch.py" in token for token in args)
     assert "num_blocks:=4" in args[-1]
     assert "camera_fps:=15" in args[-1]
+
+
+def test_yolo_confidence_threshold_reaches_the_decoder_launch():
+    args = yolo_docker_command(
+        Path("/tmp/repo"),
+        RunProfile(yolo_enabled=True, yolo_image="img", yolo_confidence_threshold=0.47))
+    assert "yolo_confidence_threshold:=0.47" in args[-1]
 
 
 def test_yolo_values_are_shell_quoted_inside_container():

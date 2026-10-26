@@ -114,7 +114,7 @@ def _configure_pipeline(context):
                 "launch", "audio_bringup.launch.py")),
             launch_arguments={
                 "use_sim_time": "false",
-                "microphone_frame": "table_mic_link",
+                "microphone_frame": "micarray_direction_link",
                 "uma16_card": LaunchConfiguration("uma16_card"),
                 "diagnostics_log_path": LaunchConfiguration("odas_diagnostics_log_path"),
                 "diagnostics_interval_s": LaunchConfiguration("odas_diagnostics_interval_s"),

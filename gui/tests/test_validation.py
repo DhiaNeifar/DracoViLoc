@@ -39,6 +39,22 @@ def test_mobile_ekf_dependency_chain():
     assert "MobileNetV2 EKF input requires MobileNetV2 and fusion." in validate_profile(profile)
 
 
+def test_minimum_sound_activity_must_be_a_normalized_threshold():
+    assert validate_profile(RunProfile(min_activity=0.0)) == []
+    assert validate_profile(RunProfile(min_activity=1.0)) == []
+    assert "Minimum sound activity must be between 0 and 1." in validate_profile(
+        RunProfile(min_activity=-0.01))
+    assert "Minimum sound activity must be between 0 and 1." in validate_profile(
+        RunProfile(min_activity=1.01))
+
+
+def test_yolo_confidence_threshold_must_be_normalized():
+    assert "YOLO confidence threshold must be between 0 and 1." in validate_profile(
+        RunProfile(yolo_confidence_threshold=-0.01))
+    assert "YOLO confidence threshold must be between 0 and 1." in validate_profile(
+        RunProfile(yolo_confidence_threshold=1.01))
+
+
 def test_physical_multimodal_profile_is_valid():
     profile = RunProfile(
         hardware_mode="real", audio_enabled=True, yolo_enabled=True,

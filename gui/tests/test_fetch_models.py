@@ -1,7 +1,9 @@
 import io
 import json
+import sys
+from types import SimpleNamespace
 
-from dracoviloc_gui.fetch_models import DriveRun, Fetcher, runs_from_listing
+from dracoviloc_gui.fetch_models import DriveRun, Fetcher, list_drive_runs, runs_from_listing
 
 
 def make_fetcher(tmp_path, files):
@@ -105,6 +107,18 @@ def test_drive_listing_picks_checkpoint_per_family():
         ("dfine", "s2", "full_dfine_s_20261024_best"),
         ("dfine", "n1", "full_dfine_n_20261025_best"),
     ]
+
+
+def test_drive_listing_supports_gdown_without_remaining_ok(monkeypatch):
+    calls = []
+
+    def download_folder(id, skip_download, quiet):
+        calls.append((id, skip_download, quiet))
+        return []
+
+    monkeypatch.setitem(sys.modules, "gdown", SimpleNamespace(download_folder=download_folder))
+    assert list_drive_runs("folder-id") == []
+    assert calls == [("folder-id", True, True)]
 
 
 def test_dfine_run_goes_to_its_own_folder(tmp_path):

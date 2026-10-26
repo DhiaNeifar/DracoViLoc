@@ -1046,18 +1046,65 @@ ApplicationWindow {
                         RowLayout {
                             Layout.fillWidth: true; spacing: 16
                             Panel {
-                                Layout.fillWidth: true; Layout.preferredHeight: 470
+                                Layout.fillWidth: true; Layout.preferredHeight: 590
                                 ColumnLayout {
                                     anchors.fill: parent; anchors.margins: 18; spacing: 10
                                     SectionTitle { text: "Pipeline" }
 
                                     Label { text: "Audio"; color: "#67DFE7"; font.bold: true }
-                                    MutedText { text: "ODAS (UMA16 microphone array) always runs." }
+                                    RowLayout {
+                                        id: audioChoice
+                                        spacing: 4
+                                        property string current: root.profile.audio_enabled ? "odas" : "off"
+                                        Repeater {
+                                            model: [["off", "Off"], ["odas", "ODAS (UMA16)"]]
+                                            delegate: RadioButton {
+                                                required property var modelData
+                                                text: modelData[1]
+                                                checked: audioChoice.current === modelData[0]
+                                                enabled: !root.controller.runActive
+                                                onClicked: root.controller.setOption(
+                                                    "audio_enabled", modelData[0] === "odas")
+                                            }
+                                        }
+                                    }
                                     RowLayout {
                                         spacing: 18
-                                        CheckBox { text: "MobileNetV2"; checked: root.profile.mobilenetv2_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("mobilenetv2_enabled", checked) }
-                                        CheckBox { text: "AST"; checked: root.profile.ast_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("ast_enabled", checked) }
-                                        CheckBox { text: "GRE"; checked: root.profile.gre_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("gre_enabled", checked) }
+                                        CheckBox { text: "MobileNetV2"; checked: root.profile.mobilenetv2_enabled; enabled: !root.controller.runActive && root.profile.audio_enabled; onToggled: root.controller.setOption("mobilenetv2_enabled", checked) }
+                                        CheckBox { text: "AST"; checked: root.profile.ast_enabled; enabled: !root.controller.runActive && root.profile.audio_enabled; onToggled: root.controller.setOption("ast_enabled", checked) }
+                                        CheckBox { text: "GRE"; checked: root.profile.gre_enabled; enabled: !root.controller.runActive && root.profile.audio_enabled; onToggled: root.controller.setOption("gre_enabled", checked) }
+                                    }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        visible: root.profile.audio_enabled
+                                        spacing: 12
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 2
+                                            MutedText { text: "Minimum sound activity" }
+                                            MutedText {
+                                                Layout.fillWidth: true
+                                                text: "Lower accepts quieter sounds; higher rejects more background noise."
+                                                wrapMode: Text.Wrap
+                                            }
+                                        }
+                                        SpinBox {
+                                            id: minimumSoundActivity
+                                            from: 0
+                                            to: 100
+                                            stepSize: 1
+                                            value: Math.round(Number(root.profile.min_activity) * 100)
+                                            editable: true
+                                            enabled: !root.controller.runActive
+                                            Layout.preferredWidth: 110
+                                            textFromValue: function(value, locale) {
+                                                return Number(value / 100).toLocaleString(locale, "f", 2)
+                                            }
+                                            valueFromText: function(text, locale) {
+                                                return Math.round(Number.fromLocaleString(locale, text) * 100)
+                                            }
+                                            onValueModified: root.controller.setOption("min_activity", value / 100.0)
+                                        }
                                     }
 
                                     Rectangle { Layout.fillWidth: true; height: 1; color: "#263746" }
@@ -1104,6 +1151,40 @@ ApplicationWindow {
                                         currentIndex: Math.max(0, ids.indexOf(root.profile[option] || "auto"))
                                         onActivated: (index) => root.controller.setOption(option, ids[index])
                                     }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        visible: root.profile.yolo_enabled &&
+                                                 (root.profile.visual_detector || "yolo") === "yolo"
+                                        spacing: 12
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 2
+                                            MutedText { text: "YOLO confidence threshold" }
+                                            MutedText {
+                                                Layout.fillWidth: true
+                                                text: "Higher rejects weak detections; lower accepts more detections."
+                                                wrapMode: Text.Wrap
+                                            }
+                                        }
+                                        SpinBox {
+                                            id: yoloConfidenceThreshold
+                                            from: 0
+                                            to: 100
+                                            stepSize: 1
+                                            value: Math.round(Number(root.profile.yolo_confidence_threshold) * 100)
+                                            editable: true
+                                            enabled: !root.controller.runActive
+                                            Layout.preferredWidth: 110
+                                            textFromValue: function(value, locale) {
+                                                return Number(value / 100).toLocaleString(locale, "f", 2)
+                                            }
+                                            valueFromText: function(text, locale) {
+                                                return Math.round(Number.fromLocaleString(locale, text) * 100)
+                                            }
+                                            onValueModified: root.controller.setOption(
+                                                "yolo_confidence_threshold", value / 100.0)
+                                        }
+                                    }
                                     MutedText {
                                         // Newer models of this detector that cannot run yet, and why.
                                         property var pending: visualModelChoice.mine.filter(m => !m.ready && (!visualModelChoice.autoModel || m.date >= visualModelChoice.autoModel.date))
@@ -1129,12 +1210,18 @@ ApplicationWindow {
                                         text: inputs.length ? "EKF fuses " + inputs.join(" + ") + "." : "EKF has no input: choose a visual detector or turn on MobileNetV2."
                                         color: inputs.length ? "#C8D7E0" : "#E8C468"
                                     }
-                                    MutedText { text: "Raw camera and audio are always recorded."; }
+                                    MutedText {
+                                        text: root.profile.audio_enabled && root.profile.yolo_enabled
+                                            ? "Raw camera and audio are recorded."
+                                            : (root.profile.audio_enabled ? "Audio is recorded."
+                                               : (root.profile.yolo_enabled ? "Raw camera is recorded."
+                                                  : "No sensor recording is enabled."))
+                                    }
                                     Item { Layout.fillHeight: true }
                                 }
                             }
                             Panel {
-                                Layout.fillWidth: true; Layout.preferredHeight: 470
+                                Layout.fillWidth: true; Layout.preferredHeight: 590
                                 GridLayout {
                                     anchors.fill: parent; anchors.margins: 18; columns: 2; columnSpacing: 18; rowSpacing: 12
                                     SectionTitle { text: "Robot and tracking"; Layout.columnSpan: 2 }
@@ -1173,7 +1260,8 @@ ApplicationWindow {
                                         id: modeBox
                                         Layout.fillWidth: true
                                         enabled: !root.controller.runActive
-                                        property var choices: [["ekf", "Fused direction (EKF)"], ["off", "Nothing (observe only)"]]
+                                        property var choices: [["off", "Nothing (observe only)"]]
+                                            .concat(root.profile.yolo_enabled || root.profile.mobilenetv2_enabled ? [["ekf", "Fused direction (EKF)"]] : [])
                                             .concat(root.profile.yolo_enabled ? [["direct_yolo", root.visualName + " only"]] : [])
                                             .concat(root.profile.mobilenetv2_enabled ? [["direct_mobilenetv2", "MobileNetV2 only"]] : [])
                                             .concat(root.profile.ast_enabled ? [["direct_ast", "AST only"]] : [])

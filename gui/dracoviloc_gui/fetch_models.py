@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import inspect
 import json
 import os
 import re
@@ -75,8 +76,12 @@ def family_of_run(name: str) -> str:
 def list_drive_runs(folder_id: str) -> list[DriveRun]:
     """Training runs in the Drive folder that have a done.json and a checkpoint."""
     import gdown
-    files = gdown.download_folder(id=folder_id, skip_download=True, quiet=True,
-                                  remaining_ok=True) or []
+    options = {"id": folder_id, "skip_download": True, "quiet": True}
+    # gdown 5 accepted remaining_ok; gdown 6 removed it along with the old
+    # fixed folder-size limit. Keep the GUI compatible with both releases.
+    if "remaining_ok" in inspect.signature(gdown.download_folder).parameters:
+        options["remaining_ok"] = True
+    files = gdown.download_folder(**options) or []
     by_run: dict[str, dict[str, str]] = {}
     for entry in files:
         run, _, inner = entry.path.partition("/")

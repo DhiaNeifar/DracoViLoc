@@ -109,11 +109,12 @@ def yolo_docker_command(project_root: Path, profile: RunProfile,
         "ros2", "launch", "isaac_ros_yolo_direction", "yolo_camera.launch.py",
         _arg("camera", profile.camera),
         _arg("detector", profile.visual_detector),
+        _arg("yolo_confidence_threshold", profile.yolo_confidence_threshold),
         _arg("model_path", model_path),
         _arg("engine_path", engine_path),
         "width:=640", "height:=480", "num_blocks:=4",
         "camera_fps:=15", "publish_rate:=15.0",
-        "direction_frame:=table_mic_link", _arg("use_viewer", profile.use_yolo_viewer),
+        "direction_frame:=micarray_direction_link", _arg("use_viewer", profile.use_yolo_viewer),
     ]
     inner = " ".join([
         "export CUDA_MODULE_LOADING=LAZY;",

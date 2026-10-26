@@ -13,9 +13,28 @@ FROM ${BASE_IMAGE}
 ARG DRACOVILOC_IMAGE_VERSION=dev
 LABEL org.dracoviloc.image-version="${DRACOVILOC_IMAGE_VERSION}"
 
-# Camera configuration (v4l2-ctl) and ROS image tools used by yolo_camera.launch.py.
+# Build/runtime dependencies plus tools kept in the image for diagnosing C++,
+# process, camera and remote-network failures.  Isaac ROS declares magic_enum
+# as a rosdep dependency, but the upstream development image does not install
+# it until rosdep is run for a workspace; bake it in so colcon builds are
+# reproducible in the project image.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends v4l-utils ros-humble-image-tools \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        file \
+        gdb \
+        gdbserver \
+        iproute2 \
+        iputils-ping \
+        less \
+        lsof \
+        net-tools \
+        procps \
+        ros-humble-image-tools \
+        ros-humble-magic-enum \
+        strace \
+        v4l-utils \
+        vim-tiny \
     && rm -rf /var/lib/apt/lists/*
 
 # The Isaac ROS Python stack is built against NumPy 1.x.
@@ -30,7 +49,7 @@ RUN python3 -m pip install --no-cache-dir "numpy>=1.24.4,<2"
 ARG YOLO_EXPORT_VENV=/opt/dracoviloc/yolo_export
 COPY yolo_export_requirements.txt /opt/dracoviloc/yolo_export_requirements.txt
 RUN python3 -m venv ${YOLO_EXPORT_VENV} \
-    && ${YOLO_EXPORT_VENV}/bin/pip install --no-cache-dir "pip==25.3" \
+    && ${YOLO_EXPORT_VENV}/bin/pip install --no-cache-dir "pip==25.3" "wheel==0.45.1" \
     && ${YOLO_EXPORT_VENV}/bin/pip install --no-cache-dir \
          --index-url https://download.pytorch.org/whl/cpu "torch==2.5.1" "torchvision==0.20.1" \
     && ${YOLO_EXPORT_VENV}/bin/pip install --no-cache-dir --no-deps \

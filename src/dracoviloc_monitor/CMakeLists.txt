@@ -32,6 +32,8 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_kinematics test/test_kinematics.cpp)
   target_include_directories(test_kinematics PRIVATE include)
+  ament_add_gtest(test_detection_geometry test/test_detection_geometry.cpp)
+  target_include_directories(test_detection_geometry PRIVATE include)
 endif()
 
 ament_package()

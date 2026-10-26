@@ -128,6 +128,8 @@ def generate_launch_description():
             'input_width': width,
             'input_height': height,
             'num_blocks': num_blocks,
+            'confidence_threshold': LaunchConfiguration(
+                'yolo_confidence_threshold'),
         }.items(),
         condition=UnlessCondition(is_dfine),
     )
@@ -184,6 +186,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'confidence_threshold', default_value='0.5',
             description='D-FINE only; YOLO uses its decoder default',
+        ),
+        DeclareLaunchArgument(
+            'yolo_confidence_threshold', default_value='0.25',
+            description='Minimum confidence accepted by the YOLO decoder',
         ),
         DeclareLaunchArgument(
             'camera',

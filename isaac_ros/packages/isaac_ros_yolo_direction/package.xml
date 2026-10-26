@@ -10,6 +10,7 @@
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>isaac_ros_yolo_bringup</exec_depend>
+  <test_depend>python3-pytest</test_depend>
   <exec_depend>yolo_video_publisher</exec_depend>
   <exec_depend>image_tools</exec_depend>
   <exec_depend>launch</exec_depend>

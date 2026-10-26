@@ -4,6 +4,9 @@ C++ extended Kalman filter for DracoViLoc direction estimates. It optionally
 subscribes to `/yolo/direction` (`yolo_enabled`) and `/mobilenetv2/direction`
 (`mobilenetv2_ekf_enabled`); every input and the `/ekf/direction` output uses
 `geometry_msgs/Vector3Stamped` with `(x,y,z)` as a direction vector.
+Inputs stamped in a moving sensor frame are rotated into `tracking_frame` at
+their measurement timestamp before fusion. If that TF is unavailable, the
+measurement is skipped rather than treated as a fixed-frame bearing.
 
 `/ekf_fused_target_pose` is temporarily retained as a compatibility alias and
 will be removed after downstream users migrate to `/ekf/direction`.

@@ -70,3 +70,28 @@ def test_old_local_mobilenet_defaults_are_migrated(tmp_path):
     assert profile.mobilenetv2_engine_path == "auto"
     assert profile.mobilenetv2_venv_python == "auto"
 
+
+def test_audio_off_disables_audio_consumers_and_recording():
+    profile = RunProfile(
+        audio_enabled=False, mobilenetv2_enabled=True, ast_enabled=True,
+        gre_enabled=True, first_arrival_mode="enforce",
+        tracking_mode="direct_mobilenetv2", recording_enabled=True).apply_rules()
+    assert profile.audio_enabled is False
+    assert profile.mobilenetv2_enabled is False
+    assert profile.mobilenetv2_ekf_enabled is False
+    assert profile.ast_enabled is False
+    assert profile.gre_enabled is False
+    assert profile.first_arrival_mode == "off"
+    assert profile.tracking_mode == "off"
+    assert profile.recording_enabled is False
+
+
+def test_audio_off_keeps_camera_pipeline_and_recording():
+    profile = RunProfile(
+        audio_enabled=False, yolo_enabled=True, mobilenetv2_enabled=True,
+        tracking_mode="ekf", recording_enabled=False).apply_rules()
+    assert profile.audio_enabled is False
+    assert profile.mobilenetv2_enabled is False
+    assert profile.tracking_mode == "ekf"
+    assert profile.recording_enabled is True
+

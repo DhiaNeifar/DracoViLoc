@@ -22,3 +22,11 @@ explicit override.
 Direction calibration parameters are `x_sign`, `y_sign`, `swap_xy` and
 `frame_id`. The default frame is `uma16_camera_direction`. See
 [`../../README.md`](../../README.md) for the full target-card workflow.
+
+The control center sets `frame_id` to `micarray_direction_link`, which follows
+the lead cobot's wrist. A visual target needs three consistent detector frames
+before it publishes a bearing; a box that jumps more than 120 pixels from the
+current target is withheld until it is confirmed after a short loss. Empty or
+uncertain detections publish no direction, so the arm's target timeout can
+decelerate it. `max_target_step_px`, `target_confirmation_frames`, and
+`target_lost_timeout_s` adjust this selection.

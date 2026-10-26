@@ -19,6 +19,7 @@ set -u
 
 colcon build \
   --base-paths src \
+  --cmake-clean-cache \
   --packages-up-to \
     isaac_ros_yolo_bringup \
     isaac_ros_yolo_direction \

@@ -68,12 +68,12 @@ class RunProfile:
     ekf_yolo_measurement_noise: float = 0.03
     ekf_mobilenetv2_measurement_noise: float = 0.15
     ekf_innovation_gate: float = 11.34
-    ekf_average_window: int = 5
-    smoothing_alpha: float = 0.50
+    ekf_average_window: int = 10
+    smoothing_alpha: float = 0.10
     angular_deadband: float = 0.003
-    max_velocity: float = 2.50
-    max_acceleration: float = 12.0
-    max_jerk: float = 80.0
+    max_velocity: float = 0.60
+    max_acceleration: float = 0.80
+    max_jerk: float = 1.0
     max_tracking_error: float = 0.50
     command_rate_hz: float = 100.0
     require_home_before_tracking: bool = True
@@ -88,6 +88,7 @@ class RunProfile:
     # "yolo", "dfine" (D-FINE S) or "dfine_n" (D-FINE N), each with its own
     # model choice ("auto" = newest with a TensorRT plan for this GPU).
     visual_detector: str = "yolo"
+    yolo_confidence_threshold: float = 0.25
     dfine_model: str = "auto"
     dfine_n_model: str = "auto"
     yolo_model_path: str = "/workspaces/isaac_ros-dev/models/drone_yolo11n_best.onnx"
@@ -108,12 +109,21 @@ class RunProfile:
             self.visual_detector, self.yolo_model)
 
     def apply_rules(self) -> "RunProfile":
-        """Fixed pipeline rules: ODAS and the EKF always run, the EKF fuses
-        exactly the detectors that are on, and everything is recorded."""
-        self.audio_enabled = True
+        """Keep dependent pipeline options consistent with their sources."""
+        if not self.audio_enabled:
+            self.mobilenetv2_enabled = False
+            self.ast_enabled = False
+            self.gre_enabled = False
+            self.first_arrival_mode = "off"
+            if self.tracking_mode in {
+                "direct_mobilenetv2", "direct_ast", "direct_gre", "direct_either"
+            }:
+                self.tracking_mode = "off"
+            if self.tracking_mode == "ekf" and not self.yolo_enabled:
+                self.tracking_mode = "off"
         self.fusion_enabled = True
         self.mobilenetv2_ekf_enabled = self.mobilenetv2_enabled
-        self.recording_enabled = True
+        self.recording_enabled = self.audio_enabled or self.yolo_enabled
         self.diagnostics_enabled = True
         return self
 
