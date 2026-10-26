@@ -45,8 +45,11 @@ Build engines with `scripts/build_mobilenetv2_engine.py`.
 - `drone_yolo11n_deployed_20260803.pt`: older deployed checkpoint.
 - `drone_yolo11n_deployed_20260803.onnx`: previous matching ONNX.
 
-Copy the current checkpoint to the Isaac workspace, export a same-basename
-`.onnx`, and generate a same-basename `.plan` there.
+Export and plan builds are done by the control center (Setup & builds >
+YOLO models) or `gui_env/bin/python -m dracoviloc_gui.yolo_models`:
+`<id>.onnx` and its `<id>.onnx.json` export record are written here (commit
+them), and the TensorRT plan `<id>.<gpu>.plan` is built in the Isaac
+workspace for each machine's GPU. See `gui/README.md`.
 
 ## Updating a model
 

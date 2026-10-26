@@ -7,8 +7,10 @@ import socket
 import subprocess
 from pathlib import Path
 
-from .host_platform import AUTO, gpu_name, resolve_mobilenet_runtime, resolve_yolo_image
+from .host_platform import (
+    AUTO, gpu_name, isaac_root, resolve_mobilenet_runtime, resolve_yolo_image)
 from .models import CheckResult, RunProfile
+from .yolo_models import Registry
 from .validation import validate_profile
 
 
@@ -145,16 +147,14 @@ def run_preflight(project_root: Path, profile: RunProfile) -> list[CheckResult]:
             "yolo_image", "YOLO container image", image_ok,
             image if image_ok else f"Missing: {image or image_detail}"))
         results.append(_exists(
-            "isaac_workspace", "Isaac ROS workspace",
-            Path.home() / "workspaces/isaac_ros-dev/install/setup.bash"))
-        isaac_root = Path.home() / "workspaces/isaac_ros-dev"
-        def host_isaac_path(container_path: str) -> Path:
-            prefix = "/workspaces/isaac_ros-dev/"
-            return isaac_root / container_path.removeprefix(prefix)
-        results.append(_exists(
-            "yolo_model", "YOLO ONNX model", host_isaac_path(profile.yolo_model_path)))
-        results.append(_exists(
-            "yolo_engine", "YOLO TensorRT plan", host_isaac_path(profile.yolo_engine_path)))
+            "isaac_workspace", "Isaac ROS workspace", isaac_root() / "install/setup.bash"))
+        try:
+            model = Registry(project_root).resolve(profile.yolo_model)
+            results.append(CheckResult(
+                "yolo_model", "YOLO model", True,
+                f"{model.id} · {model.plan_detail}" + (" (auto)" if profile.yolo_model == AUTO else "")))
+        except LookupError as error:
+            results.append(CheckResult("yolo_model", "YOLO model", False, str(error)))
         camera_found = any(
             "icspring" in name.read_text(errors="ignore").lower()
             for name in Path("/sys/class/video4linux").glob("video*/name")

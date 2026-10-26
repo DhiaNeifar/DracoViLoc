@@ -94,13 +94,16 @@ def sourced_host_command(project_root: Path, profile: RunProfile) -> list[str]:
     ]
 
 
-def yolo_docker_command(project_root: Path, profile: RunProfile) -> list[str]:
+def yolo_docker_command(project_root: Path, profile: RunProfile,
+                        model_paths: tuple[str, str] | None = None) -> list[str]:
+    """model_paths: (onnx, plan) container paths of the resolved YOLO model."""
     del project_root  # The Isaac workspace is an external runtime workspace.
+    model_path, engine_path = model_paths or (profile.yolo_model_path, profile.yolo_engine_path)
     ros_command = [
         "ros2", "launch", "isaac_ros_yolo_direction", "yolo_camera.launch.py",
         _arg("camera", profile.camera),
-        _arg("model_path", profile.yolo_model_path),
-        _arg("engine_path", profile.yolo_engine_path),
+        _arg("model_path", model_path),
+        _arg("engine_path", engine_path),
         "width:=640", "height:=480", "num_blocks:=4",
         "camera_fps:=15", "publish_rate:=15.0",
         "direction_frame:=table_mic_link", _arg("use_viewer", profile.use_yolo_viewer),

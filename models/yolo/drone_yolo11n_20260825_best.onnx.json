@@ -1,0 +1,25 @@
+{
+  "source": "drone_yolo11n_20260825_best.pt",
+  "source_sha256": "556cb4be285474d82674597cb1cd669caa68d6d71946f99e80694527c8955ae7",
+  "onnx_sha256": "55f310724731f5b8f530c5660bdfe256057a10dc44f367f1eac29ad585afca4e",
+  "exported_at": "2026-10-26T03:33:59+00:00",
+  "imgsz": 640,
+  "ultralytics": "8.4.129",
+  "torch": "2.5.1",
+  "onnx": "1.23.2",
+  "inputs": {
+    "images": [
+      1,
+      3,
+      640,
+      640
+    ]
+  },
+  "outputs": {
+    "output0": [
+      1,
+      5,
+      8400
+    ]
+  }
+}

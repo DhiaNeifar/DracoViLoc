@@ -74,3 +74,11 @@ def test_dual_cobot_launch_arguments_are_complete():
     ):
         assert expected in args
 
+
+
+def test_resolved_yolo_model_paths_reach_the_container():
+    args = yolo_docker_command(Path("/tmp/repo"), RunProfile(yolo_enabled=True, yolo_image="img"),
+                               ("/w/models/m.onnx", "/w/models/m.orin.plan"))
+    assert "model_path:=/w/models/m.onnx" in args[-1]
+    assert "engine_path:=/w/models/m.orin.plan" in args[-1]
+    assert "HOST_USER_UID=" + str(__import__("os").getuid()) in args

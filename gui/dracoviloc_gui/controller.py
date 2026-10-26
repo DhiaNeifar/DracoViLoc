@@ -26,6 +26,7 @@ from .session_log import SessionLog
 from .terminal import TerminalHub, TerminalModel, severity_of, split_line, strip_ansi
 from .units import UnitSupervisor
 from .validation import validate_profile
+from .yolo_models import Registry
 
 
 def audited(slot):
@@ -85,6 +86,7 @@ class AppController(QObject):
             self.session.event("state", "gui", "warning", self._message,
                                {"state": self._state.value})
         self._setup: dict[str, dict] = {}
+        self._models: dict = {"models": [], "gpu": "", "auto": "", "auto_error": ""}
         self._job_queue: list[str] = []
         self._current_job = next(
             (name[len("job-"):] for name in self.processes.running() if name.startswith("job-")), "")
@@ -150,6 +152,7 @@ class AppController(QObject):
             "checking": self._checking_setup,
             "images_directory": str(self.project_root / "images"),
             "saved_images": sorted(path.name for path in (self.project_root / "images").glob("*.tar.gz")),
+            **self._models,
         })
 
     @Property(bool, notify=setupChanged)
@@ -471,7 +474,15 @@ class AppController(QObject):
         env = runtime_environment()
         commands = {"host": sourced_host_command(self.project_root, self._profile)}
         if self._profile.yolo_enabled:
-            commands["yolo"] = yolo_docker_command(self.project_root, self._profile)
+            try:
+                registry = Registry(self.project_root)
+                model = registry.resolve(self._profile.yolo_model)
+            except LookupError as exc:
+                self._set_state(AppState.FAULT, str(exc))
+                return
+            paths = registry.container_paths(model.id, model.legacy)
+            self._log("yolo", "info", f"YOLO model: {model.id} ({model.plan_detail})")
+            commands["yolo"] = yolo_docker_command(self.project_root, self._profile, paths)
         run_record = self.session.record_run(self._profile.to_dict(), commands)
         self.session.event("run", "gui", "info", "Run starting",
                            {"profile": self._profile.name, "record": str(run_record)})
@@ -693,6 +704,7 @@ class AppController(QObject):
         def work():
             statuses = jobs.check_all(self.project_root)
             self._setup = {job.id: jobs.describe(job, statuses[job.id]) for job in jobs.JOBS}
+            self._models = self._scan_models()
             self._checking_setup = False
             self.session.event("setup", "setup", "info", "Setup status checked",
                                {job_id: status.state for job_id, status in statuses.items()})
@@ -700,6 +712,33 @@ class AppController(QObject):
             if self._job_queue and not self._current_job:
                 self._jobQueueReady.emit()
         threading.Thread(target=work, daemon=True).start()
+
+    def _scan_models(self) -> dict:
+        try:
+            registry = Registry(self.project_root)
+            models = registry.list()
+        except Exception as exc:
+            return {"models": [], "gpu": "", "auto": "", "auto_error": f"Model scan failed: {exc}"}
+        try:
+            auto, auto_error = registry.resolve("auto", models).id, ""
+        except LookupError as exc:
+            auto, auto_error = "", str(exc)
+        return {"models": [model.to_dict() for model in models], "gpu": registry.gpu,
+                "auto": auto, "auto_error": auto_error}
+
+    @Slot(str)
+    @audited
+    def exportModel(self, model_id: str) -> None:
+        self._job_queue = []
+        self._start_job("yolo_export", f"ONNX export of {model_id}",
+                        jobs.yolo_models_command("export", model_id), 60.0)
+
+    @Slot(str)
+    @audited
+    def buildModelPlan(self, model_id: str) -> None:
+        self._job_queue = []
+        self._start_job("yolo_plan", f"TensorRT plan for {model_id}",
+                        jobs.yolo_models_command("build-plan", model_id), 60.0)
 
     def _start_job(self, job_id: str, title: str, command: list[str],
                    stop_timeout_s: float = 30.0) -> bool:
@@ -718,6 +757,7 @@ class AppController(QObject):
             self._set_message(f"{title} could not start: {exc}")
             return False
         self._current_job = job_id
+        self._current_job_title = title
         self.terminals.model(f"job-{job_id}")
         self._set_message(f"{title} running… (output below and in Logs)")
         self.setupChanged.emit()
@@ -764,7 +804,7 @@ class AppController(QObject):
         self.setupChanged.emit()
 
     def _job_finished(self, job_id: str, code: int) -> None:
-        title = jobs.JOBS_BY_ID[job_id].title if job_id in jobs.JOBS_BY_ID else job_id
+        title = getattr(self, "_current_job_title", "") or job_id
         self._current_job = ""
         if code == 0:
             self._set_message(f"{title} finished successfully.")

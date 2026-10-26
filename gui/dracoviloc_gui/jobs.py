@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -23,6 +24,7 @@ OK, STALE, MISSING, BLOCKED, UNKNOWN = "ok", "stale", "missing", "blocked", "unk
 ISAAC_PACKAGES = ("isaac_ros_yolo_bringup", "isaac_ros_yolo_direction", "yolo_video_publisher")
 IGNORED_PARTS = {"__pycache__", ".pytest_cache", ".git"}
 ELF_MACHINES = {0x3E: "x86_64", 0xB7: "aarch64"}
+AUTO_MODEL = "auto"
 
 
 @dataclass
@@ -260,6 +262,33 @@ def git_pull(project_root: Path) -> list[str]:
     return ["git", "-C", str(project_root), "pull", "--ff-only"]
 
 
+# ------------------------------------------------------------------ YOLO model
+def check_yolo_model(project_root: Path) -> JobStatus:
+    from .yolo_models import Registry, newest_needs_work
+    registry = Registry(project_root)
+    if not registry.gpu:
+        return JobStatus(BLOCKED, "No NVIDIA GPU: TensorRT plans cannot be built here")
+    pending = newest_needs_work(registry)
+    if pending is None:
+        try:
+            model = registry.resolve(AUTO_MODEL)
+        except LookupError as error:
+            return JobStatus(MISSING, str(error))
+        return JobStatus(OK, f"Newest model ready: {model.id}", [model.plan_detail])
+    return JobStatus(MISSING if pending.plan_state == "missing" else STALE,
+                     f"Newest model {pending.id} is not ready on {registry.gpu}",
+                     [f"ONNX: {pending.onnx_detail}", f"Plan: {pending.plan_detail}",
+                      "Building a TensorRT plan takes about 10 minutes on a Jetson Orin."])
+
+
+def prepare_yolo_model(project_root: Path) -> list[str]:
+    return yolo_models_command("prepare", AUTO_MODEL)
+
+
+def yolo_models_command(*args: str) -> list[str]:
+    return [sys.executable, "-m", "dracoviloc_gui.yolo_models", *args]
+
+
 JOBS: tuple[Job, ...] = (
     Job("git", "Repository", "Fetch and fast-forward this checkout from GitHub.",
         "Pull latest", check_git, git_pull, in_update_all=False),
@@ -278,6 +307,9 @@ JOBS: tuple[Job, ...] = (
     Job("isaac_build", "Isaac ROS build",
         "colcon build of the YOLO packages inside the project container.",
         "Build in container", check_isaac_build, build_isaac, stop_timeout_s=60.0),
+    Job("yolo_model", "YOLO model for this GPU",
+        "Export the newest checkpoint to ONNX (if needed) and build its TensorRT plan for this GPU.",
+        "Prepare newest model", check_yolo_model, prepare_yolo_model, stop_timeout_s=60.0),
 )
 JOBS_BY_ID = {job.id: job for job in JOBS}
 

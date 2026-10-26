@@ -78,6 +78,10 @@ class RunProfile:
     home_duration_s: float = 12.0
     camera: str = "auto"
     yolo_image: str = "auto"
+    # Local runs: "auto" (newest model with a TensorRT plan for this GPU) or a
+    # model id from models/yolo (see yolo_models.py). The two paths below are
+    # used only by remote (agent) runs.
+    yolo_model: str = "auto"
     yolo_model_path: str = "/workspaces/isaac_ros-dev/models/drone_yolo11n_best.onnx"
     yolo_engine_path: str = "/workspaces/isaac_ros-dev/models/drone_yolo11n_best.plan"
     use_yolo_viewer: bool = False

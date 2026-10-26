@@ -75,6 +75,34 @@ the same CPU type and **Load** it there. YOLO runs and builds use the
 project image when it exists, and run as the host user so files in the
 Isaac workspace keep your ownership.
 
+## YOLO models
+
+`models/yolo/` holds the checkpoints. For each model the Setup & builds page
+shows, for this machine:
+
+1. **ONNX export** (`models/yolo/<id>.onnx` + `.onnx.json`): made by
+   `isaac_ros/tools/export_yolo.py` in the project image's pinned CPU
+   environment (Ultralytics 8.4.129, no network). It is portable, so commit it
+   (git LFS) and the other machine never has to export again. The `.json`
+   records the checkpoint's SHA-256; a retrained checkpoint marks it stale.
+2. **TensorRT plan** (`<isaac>/models/<id>.<gpu>.plan` + `.json`): built by
+   `trtexec` with the Isaac TensorRT defaults (FP16, 64 MiB workspace) on this
+   GPU, then benchmarked. The GPU is part of the file name (`orin`,
+   `quadro-t2000-with-max-q-design`, ...), so machines never share plans.
+   A new ONNX or a TensorRT upgrade in the image marks the plan stale.
+
+Runs use **Auto** by default: the newest model that has a plan for this GPU.
+Any ready model can be pinned with **Use for runs** or in Run setup. Models
+that exist only in the Isaac workspace (deployed before this registry) are
+listed as legacy: selectable, never chosen automatically. "Bring this machine
+up to date" also prepares the newest checkpoint. The same operations work
+from a terminal:
+
+```bash
+gui_env/bin/python -m dracoviloc_gui.yolo_models list
+gui_env/bin/python -m dracoviloc_gui.yolo_models prepare auto   # export + plan
+```
+
 ## Remote Jetson control
 
 1. Configure a key-based SSH host alias named `jetson` (or enter another alias
