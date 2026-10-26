@@ -88,8 +88,13 @@ class AgentRuntime:
         self._node, self._executor = node, executor
 
         def seen(topic: str):
-            def callback(_message):
+            def callback(message):
                 self._last_seen[topic] = time.monotonic()
+                if topic == "/tracking/events":
+                    self.status["tracking_event"] = message.data
+                    if message.data.startswith("arm2_started:"):
+                        self.status["arm2_started_event"] = message.data
+                        self._last_seen["/tracking/arm2_started"] = time.monotonic()
             return callback
 
         def direction(topic: str):

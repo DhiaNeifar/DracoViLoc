@@ -16,6 +16,7 @@ ApplicationWindow {
         property string state: "Idle"
         property string message: ""
         property string remoteJson: "{\"state\":\"disconnected\",\"has_control\":false}"
+        property string relayJson: "{\"busy\":false,\"needs_password\":false,\"auto_active\":false,\"last_command\":\"\",\"message\":\"No relay command sent in this session.\"}"
         property bool remoteControllable: false
         property string processesJson: "[]"
         property string sessionLogDirectory: ""
@@ -69,6 +70,9 @@ ApplicationWindow {
         function disconnectRemote() {}
         function acquireRemoteControl() {}
         function deployRemoteAgent() {}
+        function setRelay(action) {}
+        function submitRelayPassword(password) {}
+        function cancelRelayPassword() {}
     }
     property QtObject controller: appController || fallbackController
     width: 1440
@@ -106,6 +110,7 @@ ApplicationWindow {
     property var profile: JSON.parse(root.controller.profileJson)
     property var liveStatus: ({})
     property var remoteState: JSON.parse(root.controller.remoteJson)
+    property var relayState: JSON.parse(root.controller.relayJson)
     property var processes: JSON.parse(root.controller.processesJson)
     property string selectedTerminal: ""
     property var setup: JSON.parse(root.controller.setupJson)
@@ -158,6 +163,11 @@ ApplicationWindow {
         }
         function onProfileChanged() { root.profile = JSON.parse(root.controller.profileJson) }
         function onRemoteChanged() { root.remoteState = JSON.parse(root.controller.remoteJson) }
+        function onRelayChanged() {
+            root.relayState = JSON.parse(root.controller.relayJson)
+            if (root.relayState.needs_password && !relayPasswordDialog.visible)
+                relayPasswordDialog.open()
+        }
         function onProcessesChanged() { root.processes = JSON.parse(root.controller.processesJson) }
         function onProcessListChanged() { root.processList = JSON.parse(root.controller.processListJson) }
         function onRobotCheckChanged() { root.robotCheck = JSON.parse(root.controller.robotCheckJson) }
@@ -544,6 +554,37 @@ ApplicationWindow {
                                     onClicked: forceStopDialog.open()
                                 }
                                 Item { Layout.fillWidth: true }
+                            }
+                        }
+                        Panel {
+                            Layout.fillWidth: true; Layout.preferredHeight: 88
+                            RowLayout {
+                                anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 16; spacing: 12
+                                ColumnLayout {
+                                    Layout.fillWidth: true; spacing: 2
+                                    SectionTitle { text: "Jetson relay" }
+                                    MutedText {
+                                        Layout.fillWidth: true
+                                        text: root.relayState.message
+                                        elide: Text.ElideRight
+                                        ToolTip.visible: relayStatusHover.containsMouse
+                                        ToolTip.text: text
+                                        MouseArea { id: relayStatusHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
+                                    }
+                                }
+                                MutedText {
+                                    text: root.relayState.last_command ? "Last command: " + root.relayState.last_command.toUpperCase() : "Jetson · any run mode"
+                                }
+                                CalmButton {
+                                    text: "Relay ON"
+                                    enabled: !root.relayState.busy && !root.relayState.needs_password && !root.relayState.auto_active
+                                    onClicked: root.controller.setRelay("on")
+                                }
+                                CalmButton {
+                                    text: "Relay OFF"
+                                    enabled: !root.relayState.busy && !root.relayState.needs_password && !root.relayState.auto_active
+                                    onClicked: root.controller.setRelay("off")
+                                }
                             }
                         }
                         RowLayout {
@@ -1980,6 +2021,35 @@ ApplicationWindow {
         }
     }
 
+    Dialog {
+        id: relayPasswordDialog; modal: true; anchors.centerIn: parent; title: "Jetson sudo password"
+        width: 420
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        onOpened: relayPasswordField.forceActiveFocus()
+        onAccepted: {
+            let password = relayPasswordField.text
+            relayPasswordField.text = ""
+            if (password)
+                root.controller.submitRelayPassword(password)
+            else
+                root.controller.cancelRelayPassword()
+        }
+        onRejected: {
+            relayPasswordField.text = ""
+            root.controller.cancelRelayPassword()
+        }
+        contentItem: ColumnLayout {
+            spacing: 10
+            MutedText { text: "Enter the sudo password for akkurad on the Jetson." }
+            TextField {
+                id: relayPasswordField
+                Layout.fillWidth: true
+                echoMode: TextInput.Password
+                placeholderText: "Sudo password"
+                onAccepted: relayPasswordDialog.accept()
+            }
+        }
+    }
     Dialog {
         id: closeDialog; modal: true; anchors.centerIn: parent; title: "Close control center?"
         onOpened: root.controller.uiEvent("dialog_opened", title)

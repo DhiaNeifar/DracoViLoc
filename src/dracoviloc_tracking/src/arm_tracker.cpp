@@ -393,6 +393,7 @@ private:
       home_requested_ = true;
       home_reached_ = false;
       arm1_locked_ = false;
+      reset_arm2_start();
     }
 
     bool published = false;
@@ -453,6 +454,7 @@ private:
         }
         have_direction_ = false;
         arm1_locked_ = false;
+        reset_arm2_start();
         seed_left = current_;
         if (dual_arm_) seed_right = current_right_;
       } else {
@@ -469,6 +471,7 @@ private:
         control_state_ = ControlState::Stopping;
         have_direction_ = false;
         arm1_locked_ = false;
+        reset_arm2_start();
         begin_velocity_stop(servo_input_);
         if (dual_arm_) begin_velocity_stop(servo_input_right_);
         response.success = true;
@@ -702,6 +705,11 @@ private:
     input.target_acceleration.fill(0.0);
   }
 
+  void reset_arm2_start() {
+    arm2_following_ = false;
+    arm2_started_emitted_ = false;
+  }
+
   bool finish_tracking_controller_switch() {
     std::string error;
     const std::string traj_ctrl = dual_arm_ ? "dual_arm_controller" : "arm_controller";
@@ -715,6 +723,7 @@ private:
     std::lock_guard<std::mutex> lock(mutex_);
     control_state_ = ControlState::Trajectory;
     arm1_locked_ = false;
+    reset_arm2_start();
     RCLCPP_INFO(get_logger(), "Tracking disabled cleanly; %s is active", traj_ctrl.c_str());
     return true;
   }
@@ -800,6 +809,7 @@ private:
         }
 
         if (arm2_should_track) {
+          arm2_following_ = true;
           // Arm 2 is solved exactly like Arm 1, against the same direction.
           const auto candidate_right = solve(
             servo_input_right_.current_position, desired, fixed_right_, wrist_lookup_right_);
@@ -813,6 +823,7 @@ private:
           servo_input_right_.target_acceleration.fill(0.0);
         } else {
           begin_velocity_stop(servo_input_right_);
+          reset_arm2_start();
         }
       }
     } else {
@@ -820,6 +831,7 @@ private:
       if (dual_arm_) {
         begin_velocity_stop(servo_input_right_);
         arm1_locked_ = false;
+        reset_arm2_start();
       }
     }
 
@@ -852,6 +864,15 @@ private:
       servo_command_right_[4] = fixed_right_[4];
       servo_command_right_[5] = fixed_right_[5];
       servo_output_right_.pass_to_input(servo_input_right_);
+      if (arm2_following_ && !arm2_started_emitted_ && target_available &&
+          (std::abs(servo_output_right_.new_velocity[0]) > 0.001 ||
+           std::abs(servo_output_right_.new_velocity[3]) > 0.001)) {
+        std_msgs::msg::String event;
+        event.data = "arm2_started:" + std::to_string(
+          std::chrono::steady_clock::now().time_since_epoch().count());
+        events_pub_->publish(event);
+        arm2_started_emitted_ = true;
+      }
     }
 
     // Publish servo command
@@ -888,6 +909,8 @@ private:
   std::string dual_tracking_policy_{"first_arm_lead"};
   double lead_lock_tolerance_rad_{0.10};
   bool arm1_locked_{false};
+  bool arm2_following_{false};
+  bool arm2_started_emitted_{false};
 
   const std::vector<std::string> names_single_{
     "joint1", "joint2", "joint3", "joint4", "joint5", "joint6"};

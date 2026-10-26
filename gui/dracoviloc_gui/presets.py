@@ -23,24 +23,18 @@ def built_in_profiles() -> dict[str, RunProfile]:
             audio_enabled=True,
             yolo_enabled=True, mobilenetv2_enabled=True,
             mobilenetv2_ekf_enabled=True, fusion_enabled=True,
-            tracking_mode="ekf", recording_enabled=True,
-            ekf_average_window=10, smoothing_alpha=0.10,
-            max_velocity=0.60, max_acceleration=0.80, max_jerk=1.0),
+            tracking_mode="ekf", recording_enabled=True),
         "Single Cobot EKF": RunProfile(
             name="Single Cobot EKF", hardware_mode="real", audio_enabled=True,
             yolo_enabled=True, mobilenetv2_enabled=True,
             mobilenetv2_ekf_enabled=True, fusion_enabled=True,
-            tracking_mode="ekf", recording_enabled=True,
-            ekf_average_window=10, smoothing_alpha=0.10,
-            max_velocity=0.60, max_acceleration=0.80, max_jerk=1.0),
+            tracking_mode="ekf", recording_enabled=True),
         "Dual Cobot EKF": RunProfile(
             name="Dual Cobot EKF", hardware_mode="real", dual_arm=True,
             left_robot_ip="192.168.58.2", right_robot_ip="192.168.58.3",
             second_arm_x=-0.75, dual_tracking_policy="first_arm_lead",
             audio_enabled=True, yolo_enabled=True,
             mobilenetv2_enabled=True, mobilenetv2_ekf_enabled=True,
-            fusion_enabled=True, tracking_mode="ekf", recording_enabled=True,
-            ekf_average_window=10, smoothing_alpha=0.10,
-            max_velocity=0.60, max_acceleration=0.80, max_jerk=1.0),
+            fusion_enabled=True, tracking_mode="ekf", recording_enabled=True),
     }
     return {name: profile.apply_rules() for name, profile in profiles.items()}

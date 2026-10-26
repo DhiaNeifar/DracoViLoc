@@ -2,6 +2,17 @@ import json
 
 from dracoviloc_gui.models import RunProfile
 from dracoviloc_gui.profiles import ProfileStore, SCHEMA_VERSION
+from dracoviloc_gui.presets import built_in_profiles
+
+
+def test_builtin_motion_defaults_match_latest_run():
+    for profile in built_in_profiles().values():
+        assert (profile.max_velocity, profile.max_acceleration, profile.max_jerk) == (5.0, 12.0, 80.0)
+        assert profile.max_tracking_error == 1.57
+        assert profile.smoothing_alpha == 0.50
+        assert profile.angular_deadband == 0.003
+        assert profile.ekf_average_window == 5
+        assert profile.command_rate_hz == 100.0
 
 
 def test_missing_profile_file_returns_presets(tmp_path):

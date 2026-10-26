@@ -54,6 +54,8 @@ class AppController(QObject):
     telemetryUpdated = Signal(str)
     quitReady = Signal()
     remoteChanged = Signal()
+    relayChanged = Signal()
+    _relayFinished = Signal(str, bool, str, bool, bool)
     processesChanged = Signal()
     setupChanged = Signal()
     processListChanged = Signal()
@@ -75,6 +77,16 @@ class AppController(QObject):
             launch_source.read_text(encoding="utf-8"))))
         self._status: dict = {}
         self._remote_state: dict = {"state": "disconnected", "has_control": False}
+        self._relay_state: dict = {
+            "busy": False, "needs_password": False, "auto_active": False,
+            "last_command": "",
+            "message": "No relay command sent in this session.",
+        }
+        self._relay_pending_action = ""
+        self._relayFinished.connect(self._finish_relay, Qt.QueuedConnection)
+        self._auto_relay_seen = ""
+        self._quit_after_relay = False
+        self.statusChanged.connect(self._maybe_auto_relay, Qt.QueuedConnection)
         self._shutting_down_for_quit = False
         self.session = SessionLog(project_root / "logs", project_root)
         self._last_logged_message = ""
@@ -149,6 +161,10 @@ class AppController(QObject):
     @Property(str, notify=remoteChanged)
     def remoteJson(self) -> str:
         return json.dumps(self._remote_state)
+
+    @Property(str, notify=relayChanged)
+    def relayJson(self) -> str:
+        return json.dumps(self._relay_state)
 
     @Property(bool, notify=remoteChanged)
     def remoteControllable(self) -> bool:
@@ -339,6 +355,112 @@ class AppController(QObject):
             elif not ok:
                 self._set_state(AppState.FAULT, message)
         self.remote.call(command, args or {}, complete)
+
+    def _send_relay(self, action: str, password: str | None = None,
+                    auto: bool = False) -> None:
+        self._relay_state.update({
+            "busy": True, "needs_password": False,
+            "message": f"Sending relay {action.upper()} to Jetson…",
+        })
+        self.relayChanged.emit()
+        try:
+            self.remote.set_relay(
+                "jetson", action, password,
+                lambda ok, message, needs_password: self._relayFinished.emit(
+                    action, ok, message, needs_password, auto))
+        except Exception as error:
+            self._relayFinished.emit(action, False, str(error), False, auto)
+
+    @Slot(str)
+    def _maybe_auto_relay(self, payload: str) -> None:
+        status = json.loads(payload)
+        event = status.get("arm2_started_event", "")
+        if not event.startswith("arm2_started:"):
+            return
+        if event == self._auto_relay_seen:
+            return
+        self._auto_relay_seen = event
+        if (not self._profile.dual_arm or self._state != AppState.TRACKING or
+                not status.get("dual_arm_detected") or
+                status.get("freshness", {}).get("/tracking/arm2_started", 999) > 2.0 or
+                self._relay_state["busy"] or self._relay_state["auto_active"] or
+                self._relay_state["needs_password"]):
+            return
+        self._relay_state["auto_active"] = True
+        self._log("relay", "info", "Arm 2 started moving; starting 30-second relay pulse")
+        self._send_relay("pulse", self._saved_relay_password(), auto=True)
+
+    @staticmethod
+    def _saved_relay_password() -> str | None:
+        """Read the optional laptop-only credential, never from a run profile."""
+        path = Path.home() / ".config/dracoviloc-gui/relay-sudo-password"
+        try:
+            if path.stat().st_mode & 0o077:
+                return None
+            return path.read_text(encoding="utf-8").rstrip("\r\n") or None
+        except OSError:
+            return None
+
+    @Slot(str)
+    @audited
+    def setRelay(self, action: str) -> None:
+        if (self._relay_state["busy"] or self._relay_state["needs_password"] or
+                self._relay_state["auto_active"]):
+            return
+        if action not in {"on", "off"}:
+            return
+        self._relay_pending_action = action
+        self._send_relay(action, self._saved_relay_password())
+
+    @Slot(str)
+    def submitRelayPassword(self, password: str) -> None:
+        # The password must never enter the audited slot arguments or logs.
+        self.session.event("action", "operator", "info", "submitRelayPassword")
+        if not self._relay_pending_action or not self._relay_state["needs_password"]:
+            return
+        if not password:
+            self._relay_state["message"] = "Enter the Jetson sudo password."
+            self.relayChanged.emit()
+            return
+        self._send_relay(self._relay_pending_action, password)
+
+    @Slot()
+    @audited
+    def cancelRelayPassword(self) -> None:
+        self._relay_pending_action = ""
+        self._relay_state.update({
+            "busy": False, "needs_password": False,
+            "message": "Relay command cancelled.",
+        })
+        self.relayChanged.emit()
+
+    @Slot(str, bool, str, bool, bool)
+    def _finish_relay(
+        self, action: str, ok: bool, message: str, needs_password: bool,
+        auto: bool,
+    ) -> None:
+        self._relay_state["busy"] = False
+        self._relay_state["needs_password"] = needs_password and not auto
+        if auto:
+            self._relay_state["auto_active"] = False
+            self._relay_state["message"] = (
+                "Automatic relay pulse completed; relay OFF." if ok else message)
+            if ok:
+                self._relay_state["last_command"] = "off"
+            if self._quit_after_relay:
+                self._quit_after_relay = False
+                if ok:
+                    QTimer.singleShot(0, self.requestQuit)
+            self._log("relay", "info" if ok else "error", message)
+        elif needs_password:
+            self._relay_state["message"] = message
+        else:
+            self._relay_pending_action = ""
+            self._relay_state["message"] = message
+            if ok:
+                self._relay_state["last_command"] = action
+            self._log("relay", "info" if ok else "error", message)
+        self.relayChanged.emit()
 
     @Slot()
     @audited
@@ -795,6 +917,11 @@ class AppController(QObject):
     @Slot()
     @audited
     def requestQuit(self) -> None:
+        if self._relay_state["auto_active"]:
+            self._quit_after_relay = True
+            self._relay_state["message"] = "Waiting for the Jetson relay pulse to finish before closing…"
+            self.relayChanged.emit()
+            return
         if self._is_remote():
             # Closing the dashboard intentionally does not alter the Jetson run.
             self.remote.disconnect(release=True)

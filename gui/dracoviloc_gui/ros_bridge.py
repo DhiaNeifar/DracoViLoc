@@ -30,6 +30,7 @@ class RosBridge:
         self._joint_count = 0
         self._at_home = False
         self._tracking_event = ""
+        self._arm2_started_event = ""
         self._controllers: dict[str, str] = {}
         self._directions: dict[str, dict[str, float]] = {}
         self._arms: dict[str, dict[str, object]] = {}
@@ -67,6 +68,9 @@ class RosBridge:
                 self._last_seen[topic] = time.monotonic()
                 if topic == "/tracking/events":
                     self._tracking_event = message.data
+                    if message.data.startswith("arm2_started:"):
+                        self._arm2_started_event = message.data
+                        self._last_seen["/tracking/arm2_started"] = time.monotonic()
             return callback
 
         self._node.create_subscription(String, "/tracking/events", seen("/tracking/events"), 20)
@@ -147,6 +151,7 @@ class RosBridge:
                 "dual_arm_detected": "left" in self._arms and "right" in self._arms,
                 "at_home": self._at_home,
                 "tracking_event": self._tracking_event,
+                "arm2_started_event": self._arm2_started_event,
                 "home_service": self._home_client.service_is_ready(),
                 "tracking_service": self._tracking_client.service_is_ready(),
                 "controllers": self._controllers,

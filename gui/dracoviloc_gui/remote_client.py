@@ -18,6 +18,13 @@ class RemoteError(RuntimeError):
     pass
 
 
+class RelayPasswordRequired(RemoteError):
+    pass
+
+
+RELAY_UID = "3D59C4B4"
+
+
 async def _read_agent_hello(reader: asyncio.StreamReader, timeout: float = 8.0) -> dict[str, Any]:
     """Read through harmless early events from agents predating the handshake fix."""
     deadline = asyncio.get_running_loop().time() + timeout
@@ -277,6 +284,71 @@ class RemoteJetsonClient:
             self._ssh.close()
         self._reader = self._writer = self._listener = self._ssh = None
         self.session_id = self.controller_id = None
+
+    def set_relay(
+        self, alias: str, action: str, password: str | None,
+        callback: Callable[[bool, str, bool], None],
+    ) -> None:
+        """Run the Jetson relay command over a separate SSH connection."""
+        future = self._submit(self._set_relay(alias, action, password))
+
+        def complete(result) -> None:
+            try:
+                callback(True, result.result(), False)
+            except RelayPasswordRequired:
+                callback(False, "Jetson sudo password required", True)
+            except Exception as error:
+                callback(False, str(error), False)
+
+        future.add_done_callback(complete)
+
+    async def _set_relay(self, alias: str, action: str, password: str | None) -> str:
+        if action not in {"on", "off", "pulse"}:
+            raise ValueError("Relay action must be on, off, or pulse")
+        try:
+            import asyncssh
+        except ImportError as error:
+            raise RemoteError("AsyncSSH is not installed; reinstall the GUI dependencies") from error
+
+        # This SSH session does not depend on the Jetson agent, its control
+        # lease, or the selected local/remote execution mode.
+        async with asyncssh.connect(alias, connect_timeout=8, login_timeout=8) as connection:
+            home_result = await connection.run('printf %s "$HOME"', check=True, timeout=8)
+            home = home_result.stdout.strip()
+            if not home.startswith("/"):
+                raise RemoteError("Could not determine the Jetson home directory")
+            script = str(PurePosixPath(home) / "relay_control.py")
+            exists = await connection.run(
+                "test -f " + shlex.quote(script), check=False, timeout=8)
+            if exists.exit_status != 0:
+                raise RemoteError(f"Relay script is missing on Jetson: {script}")
+
+            command = ["sudo"]
+            if password is None:
+                command.append("-n")
+            else:
+                command.extend(["-S", "-p", ""])
+            command.extend(["python3", script, action, "--uid", RELAY_UID, "-v"])
+            if action == "pulse":
+                command.extend(["--pulse-seconds", "30"])
+            result = await connection.run(
+                shlex.join(command), check=False,
+                timeout=50 if action == "pulse" else 25,
+                **({"input": password + "\n"} if password is not None else {}))
+            if result.exit_status != 0:
+                detail = (result.stderr or result.stdout).strip()
+                if password is None and "password is required" in detail.lower():
+                    raise RelayPasswordRequired(detail)
+                if password is not None and (
+                    "incorrect password" in detail.lower()
+                    or "sorry, try again" in detail.lower()
+                    or "no password was provided" in detail.lower()
+                ):
+                    raise RelayPasswordRequired("Jetson sudo password was rejected")
+                raise RemoteError(detail[:500] or f"Jetson relay command exited {result.exit_status}")
+            output = result.stdout.strip()
+            return f"Relay {action.upper()} command completed" + (
+                f": {output[-500:]}" if output else ".")
 
     def deploy(
         self, alias: str, source_root: Path, config: dict[str, Any],
