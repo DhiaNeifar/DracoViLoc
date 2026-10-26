@@ -299,14 +299,14 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_deactivate(const
     if (_left_robot) {
         _left_robot->StopMotion();
         _left_robot->CloseRPC();
-        _left_robot.release();
+        _left_robot.reset();
         RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "Left robot stopped!");
     }
     
     if (_right_robot) {
         _right_robot->StopMotion();
         _right_robot->CloseRPC();
-        _right_robot.release();
+        _right_robot.reset();
         RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "Right robot stopped!");
     }
     
@@ -414,10 +414,10 @@ hardware_interface::return_type FairinoHardwareInterface::write(const rclcpp::Ti
         if(left_returncode != 0){
             RCLCPP_ERROR(rclcpp::get_logger("FairinoHardwareInterface"),
                 "Left robot ServoJ failed with error code: %d", left_returncode);
-            return hardware_interface::return_type::ERROR;
         }
         
         // Send command to right robot if in dual-arm mode
+        int right_returncode = 0;
         if (_right_robot) {
             JointPos right_cmd;
             ExaxisPos right_extcmd{0,0,0,0};
@@ -427,13 +427,18 @@ hardware_interface::return_type FairinoHardwareInterface::write(const rclcpp::Ti
             }
             
             _last_servoj_right = send_time;
-            int right_returncode = _right_robot->ServoJ(
+            right_returncode = _right_robot->ServoJ(
                 &right_cmd, &right_extcmd, 0, 0, SERVO_COMMAND_PERIOD_S, 0, 0);
             if(right_returncode != 0){
                 RCLCPP_ERROR(rclcpp::get_logger("FairinoHardwareInterface"),
                     "Right robot ServoJ failed with error code: %d", right_returncode);
-                return hardware_interface::return_type::ERROR;
             }
+        }
+
+        // Command both arms before reporting a failure, so one arm's error
+        // never leaves the other arm without its command for this cycle.
+        if (left_returncode != 0 || right_returncode != 0) {
+            return hardware_interface::return_type::ERROR;
         }
 
         for (size_t i = 0; i < 12; ++i) {

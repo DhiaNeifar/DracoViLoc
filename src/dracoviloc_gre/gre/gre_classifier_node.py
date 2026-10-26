@@ -73,7 +73,7 @@ are not the calibrated ones. Re-measure before relying on the thresholds.
 USAGE
 -----
     source /opt/ros/humble/setup.bash
-    source ~/odas_ws/install/setup.bash
+    source ~/DracoViLoc/install/setup.bash
     source ~/gre_env/bin/activate            # venv AFTER ros
     python3 gre_classifier_node.py --repo ~/project/GRE/rt_drone_detector
 """

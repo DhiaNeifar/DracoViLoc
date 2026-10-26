@@ -619,9 +619,11 @@ class RawSocketServer(SocketServer):
                  node: rclpy.node.Node,
                  configuration: dict,
                  audio_frame_timestamp_queue: queue.Queue,
-                 audio_queue_size: int):
+                 audio_queue_size: int,
+                 coordinator: Optional['PairCoordinator'] = None):
         super().__init__(node, configuration['raw']['interface']['port'])
         self._audio_frame_timestamp_queue = audio_frame_timestamp_queue
+        self._coordinator = coordinator
 
         self._raw_nbits = configuration['raw']['nBits']
         self._raw_format = nbits_to_format(self._raw_nbits)
@@ -644,7 +646,11 @@ class RawSocketServer(SocketServer):
                 .format(msg.format, msg.channel_count, msg.sampling_frequency, msg.frame_sample_count))
             return
 
-        if self._audio_frame_timestamp_queue is not None:
+        # Only the unpaired SSS path (_send_sss) consumes these stamps. While
+        # paired mode stamps /sss itself, nothing reads the queue, so pushing
+        # would grow it without bound (~86 entries/s).
+        if self._audio_frame_timestamp_queue is not None and not (
+                self._coordinator is not None and self._coordinator.is_paired_enabled()):
             self._audio_frame_timestamp_queue.put(msg.header.stamp)
         self._raw_queue.put(msg.data)
 
@@ -1048,7 +1054,8 @@ class OdasServerNode(rclpy.node.Node):
             self._raw_socket_server = RawSocketServer(self,
                                                       self._configuration,
                                                       audio_frame_timestamp_queue,
-                                                      self._get_audio_queue_size())
+                                                      self._get_audio_queue_size(),
+                                                      coordinator=self._coordinator)
         else:
             self._raw_socket_server = None
 

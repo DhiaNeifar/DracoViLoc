@@ -28,7 +28,14 @@ else
   mkdir -p "${isaac_ws}/src" "${isaac_ws}/models" "${isaac_ws}/media" "${isaac_ws}/scripts"
 fi
 
+# In dry-run mode, "## <destination>/" headers tell readers (and the control
+# center) which destination the following itemized changes belong to.
+section() {
+  if [[ "${dry_run}" == true ]]; then echo "## $1"; fi
+}
+
 for package in isaac_ros_yolo_bringup isaac_ros_yolo_direction yolo_video_publisher; do
+  section "src/${package}/"
   # Container-created Python caches may belong to a remapped UID. Ignore them
   # during host deployment instead of trying to delete them.
   rsync "${rsync_options[@]}" --delete \
@@ -37,10 +44,14 @@ for package in isaac_ros_yolo_bringup isaac_ros_yolo_direction yolo_video_publis
     "${isaac_ws}/src/${package}/"
 done
 
+section "scripts/"
 rsync "${rsync_options[@]}" "${repo_root}/isaac_ros/tools/" "${isaac_ws}/scripts/"
+section "models/"
 rsync "${rsync_options[@]}" --exclude='*.plan' \
   "${repo_root}/isaac_ros/models/" "${isaac_ws}/models/"
+section "media/"
 rsync "${rsync_options[@]}" "${repo_root}/isaac_ros/media/" "${isaac_ws}/media/"
+section "scripts/"
 rsync "${rsync_options[@]}" \
   "${repo_root}/scripts/build_isaac_ros.sh" \
   "${isaac_ws}/scripts/build_dracoviloc_yolo.sh"

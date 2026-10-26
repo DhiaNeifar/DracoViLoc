@@ -17,6 +17,20 @@ ApplicationWindow {
         property string message: ""
         property string remoteJson: "{\"state\":\"disconnected\",\"has_control\":false}"
         property bool remoteControllable: false
+        property string processesJson: "[]"
+        property string sessionLogDirectory: ""
+        property string setupJson: "{\"jobs\": [], \"saved_images\": []}"
+        property bool jobActive: false
+        function refreshSetup() {}
+        function runJob(id) {}
+        function updateAll() {}
+        function cancelJob() {}
+        function saveProjectImage() {}
+        function loadProjectImage(name) {}
+        function terminalModel(name) { return null }
+        function uiEvent(action, detail) {}
+        function openSessionFolder() {}
+        function openProcessLog(name) {}
         function requestQuit() {}
         function stopMotion() {}
         function runPreflight() {}
@@ -51,6 +65,10 @@ ApplicationWindow {
     property var profile: JSON.parse(root.controller.profileJson)
     property var liveStatus: ({})
     property var remoteState: JSON.parse(root.controller.remoteJson)
+    property var processes: JSON.parse(root.controller.processesJson)
+    property string selectedTerminal: ""
+    property var setup: JSON.parse(root.controller.setupJson)
+    property string setupTerminal: ""
 
     palette.window: "#0B1118"
     palette.windowText: "#E8F0F7"
@@ -77,6 +95,11 @@ ApplicationWindow {
         target: root.controller
         function onProfileChanged() { root.profile = JSON.parse(root.controller.profileJson) }
         function onRemoteChanged() { root.remoteState = JSON.parse(root.controller.remoteJson) }
+        function onProcessesChanged() { root.processes = JSON.parse(root.controller.processesJson) }
+        function onSetupChanged() {
+            root.setup = JSON.parse(root.controller.setupJson)
+            if (root.setup.current) root.setupTerminal = "job-" + root.setup.current
+        }
         function onStatusChanged(payload) { root.liveStatus = JSON.parse(payload) }
         function onPreflightFinished(payload, ok) {
             preflightModel.clear()
@@ -203,7 +226,7 @@ ApplicationWindow {
                 }
 
                 Repeater {
-                    model: ["Dashboard", "Run setup", "Recordings", "Logs", "System"]
+                    model: ["Dashboard", "Run setup", "Recordings", "Logs", "Setup & builds", "System"]
                     delegate: Button {
                         id: navButton
                         required property string modelData
@@ -213,8 +236,10 @@ ApplicationWindow {
                         text: modelData
                         flat: true
                         onClicked: {
+                            root.controller.uiEvent("navigate", modelData)
                             root.currentPage = index
                             if (index === 2) root.controller.refreshRecordings()
+                            if (index === 4) root.controller.refreshSetup()
                         }
                         background: Rectangle {
                             radius: 9
@@ -262,7 +287,7 @@ ApplicationWindow {
                 RowLayout {
                     anchors.fill: parent; anchors.leftMargin: 26; anchors.rightMargin: 26
                     ColumnLayout {
-                        Label { text: ["Operations", "Configure run", "Recording library", "System logs", "System readiness"][root.currentPage]; color: "#EEF5F8"; font.pixelSize: 22; font.bold: true }
+                        Label { text: ["Operations", "Configure run", "Recording library", "System logs", "Setup & builds", "System readiness"][root.currentPage]; color: "#EEF5F8"; font.pixelSize: 22; font.bold: true }
                         MutedText { text: root.controller.message; Layout.maximumWidth: 760 }
                     }
                     Item { Layout.fillWidth: true }
@@ -560,7 +585,7 @@ ApplicationWindow {
                                     CheckBox { text: "AST"; checked: root.profile.ast_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("ast_enabled", checked) }
                                     CheckBox { text: "GRE"; checked: root.profile.gre_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("gre_enabled", checked) }
                                     CheckBox { text: "EKF fusion"; checked: root.profile.fusion_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("fusion_enabled", checked) }
-                                    CheckBox { text: "Record run"; checked: root.profile.recording_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("recording_enabled", checked) }
+                                    CheckBox { text: root.profile.yolo_enabled ? "Record run (raw camera: always on)" : "Record run"; checked: root.profile.recording_enabled || root.profile.yolo_enabled; enabled: !root.controller.runActive && !root.profile.yolo_enabled; onToggled: root.controller.setOption("recording_enabled", checked) }
                                     CheckBox { text: "Diagnostics"; checked: root.profile.diagnostics_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("diagnostics_enabled", checked) }
                                 }
                             }
@@ -599,8 +624,6 @@ ApplicationWindow {
                                 TextField { text: root.profile.second_arm_y; enabled: !root.controller.runActive; onEditingFinished: root.controller.setOption("second_arm_y", text) }
                                 MutedText { text: "Right cobot Z (m)" }
                                 TextField { text: root.profile.second_arm_z; enabled: !root.controller.runActive; onEditingFinished: root.controller.setOption("second_arm_z", text) }
-                                MutedText { text: "Target distance (m)" }
-                                TextField { text: root.profile.target_nominal_distance; enabled: !root.controller.runActive; onEditingFinished: root.controller.setOption("target_nominal_distance", text) }
                                 MutedText { text: "Tracking policy" }
                                 ComboBox {
                                     model: ["first_arm_lead", "simultaneous"]
@@ -702,15 +725,68 @@ ApplicationWindow {
                 ColumnLayout {
                     anchors.margins: 22; spacing: 12
                     RowLayout {
-                        SectionTitle { text: "Unified runtime log" }
+                        Layout.fillWidth: true; spacing: 10
+                        SectionTitle { text: "Logs" }
+                        MutedText { text: "Session: " + root.controller.sessionLogDirectory; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                        CalmButton { text: "Open session folder"; onClicked: root.controller.openSessionFolder() }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 6
+                        Repeater {
+                            model: [{"name": "", "state": "events"}].concat(root.processes)
+                            delegate: Button {
+                                id: tabButton
+                                required property var modelData
+                                property bool selected: root.selectedTerminal === modelData.name
+                                flat: true; implicitHeight: 34
+                                text: modelData.name === "" ? "Events" : modelData.name
+                                onClicked: {
+                                    root.controller.uiEvent("open_log_tab", text)
+                                    root.selectedTerminal = modelData.name
+                                }
+                                background: Rectangle {
+                                    radius: 8
+                                    color: tabButton.selected ? "#17313A" : "#121C26"
+                                    border.color: tabButton.selected ? "#28545C" : "#1E2C39"
+                                }
+                                contentItem: RowLayout {
+                                    spacing: 6
+                                    StatusDot {
+                                        visible: tabButton.modelData.name !== ""
+                                        healthy: tabButton.modelData.state === "active"
+                                    }
+                                    Label {
+                                        text: tabButton.text
+                                        color: tabButton.selected ? "#67DFE7" : "#93A7B8"
+                                        leftPadding: tabButton.modelData.name === "" ? 6 : 0; rightPadding: 6
+                                    }
+                                }
+                            }
+                        }
                         Item { Layout.fillWidth: true }
-                        MutedText { text: logModel.count + " events" }
-                        CalmButton { text: "Clear"; onClicked: logModel.clear() }
+                        CheckBox { id: followLog; text: "Follow"; checked: true }
+                        CalmButton {
+                            visible: root.selectedTerminal !== ""
+                            text: "Open log file"
+                            onClicked: root.controller.openProcessLog(root.selectedTerminal)
+                        }
+                        CalmButton {
+                            text: "Clear view"
+                            onClicked: {
+                                root.controller.uiEvent("clear_log_view", root.selectedTerminal || "Events")
+                                if (root.selectedTerminal === "") logModel.clear()
+                                else terminalView.model.clear()
+                            }
+                        }
                     }
                     Panel {
                         Layout.fillWidth: true; Layout.fillHeight: true
+                        visible: root.selectedTerminal === ""
                         ListView {
+                            id: eventsView
                             anchors.fill: parent; anchors.margins: 8; clip: true; model: logModel; spacing: 2
+                            onCountChanged: if (followLog.checked) positionViewAtEnd()
+                            ScrollBar.vertical: ScrollBar {}
                             delegate: Rectangle {
                                 required property int index
                                 required property string timestamp
@@ -722,7 +798,169 @@ ApplicationWindow {
                                     anchors.fill: parent; anchors.margins: 7
                                     Label { text: timestamp.slice(11); color: "#62798B"; font.family: "monospace"; Layout.preferredWidth: 72 }
                                     Label { text: subsystem; color: "#57CAD3"; font.bold: true; Layout.preferredWidth: 90 }
-                                    Label { id: logText; text: message; color: severity === "error" ? "#FF8992" : "#C8D7E0"; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                                    Label { id: logText; text: message; color: severity === "error" ? "#FF8992" : (severity === "warning" ? "#E8C468" : "#C8D7E0"); wrapMode: Text.Wrap; Layout.fillWidth: true }
+                                }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true; Layout.fillHeight: true
+                        visible: root.selectedTerminal !== ""
+                        color: "#070C11"; radius: 10; border.color: "#1E2C39"
+                        ListView {
+                            id: terminalView
+                            anchors.fill: parent; anchors.margins: 8; clip: true
+                            model: root.selectedTerminal !== "" ? root.controller.terminalModel(root.selectedTerminal) : null
+                            reuseItems: true
+                            onCountChanged: if (followLog.checked) positionViewAtEnd()
+                            ScrollBar.vertical: ScrollBar {}
+                            ScrollBar.horizontal: ScrollBar {}
+                            contentWidth: width * 2
+                            flickableDirection: Flickable.AutoFlickDirection
+                            delegate: Row {
+                                required property string time
+                                required property string html
+                                required property string severity
+                                spacing: 10
+                                Text { text: time; color: "#4F6576"; font.family: "monospace"; font.pixelSize: 12 }
+                                Text {
+                                    text: html; textFormat: Text.StyledText
+                                    color: severity === "error" ? "#FF8992" : (severity === "warning" ? "#E8C468" : "#C8D7E0")
+                                    font.family: "monospace"; font.pixelSize: 12
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Setup & builds
+                ColumnLayout {
+                    anchors.margins: 22; spacing: 12
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 10
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 2
+                            SectionTitle { text: "Setup & builds for this machine" }
+                            MutedText { text: root.setup.checking ? "Checking…" : "Each card checks one component; its button runs the same script you would run in a terminal." }
+                        }
+                        CalmButton { text: "Check again"; enabled: !root.setup.checking; onClicked: root.controller.refreshSetup() }
+                        CalmButton { text: "Cancel job"; visible: root.controller.jobActive; onClicked: root.controller.cancelJob() }
+                        Button {
+                            text: "Bring this machine up to date"
+                            enabled: !root.controller.jobActive && !root.controller.runActive && !root.setup.checking
+                            highlighted: true
+                            onClicked: root.controller.updateAll()
+                        }
+                    }
+                    ScrollView {
+                        Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredHeight: 3
+                        contentWidth: availableWidth
+                        ColumnLayout {
+                            width: parent.width; spacing: 8
+                            Repeater {
+                                model: root.setup.jobs
+                                delegate: Rectangle {
+                                    id: card
+                                    required property var modelData
+                                    property bool running: root.setup.current === modelData.id
+                                    property bool queued: (root.setup.queue || []).indexOf(modelData.id) >= 0
+                                    property bool expanded: false
+                                    property color stateColor: modelData.state === "ok" ? "#5BD08A" : (modelData.state === "stale" || modelData.state === "missing" ? "#E8C468" : (modelData.state === "blocked" ? "#FF8992" : "#7E8F9C"))
+                                    Layout.fillWidth: true
+                                    implicitHeight: cardColumn.implicitHeight + 24
+                                    radius: 10; color: "#131E29"; border.color: card.running ? "#35C6D0" : "#1E2C39"
+                                    ColumnLayout {
+                                        id: cardColumn
+                                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 12
+                                        spacing: 4
+                                        RowLayout {
+                                            Layout.fillWidth: true; spacing: 10
+                                            Rectangle { width: 10; height: 10; radius: 5; color: card.stateColor }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true; spacing: 1
+                                                Label { text: card.modelData.title; color: "#EEF5F8"; font.bold: true }
+                                                MutedText {
+                                                    Layout.fillWidth: true; elide: Text.ElideRight
+                                                    text: card.running ? "Running…" : (card.queued ? "Queued" : card.modelData.summary)
+                                                    color: card.running ? "#67DFE7" : card.stateColor
+                                                }
+                                            }
+                                            CalmButton {
+                                                text: card.expanded ? "Hide details" : "Details"
+                                                visible: (card.modelData.details || []).length > 0 || card.modelData.description
+                                                onClicked: { card.expanded = !card.expanded; root.controller.uiEvent("setup_details", card.modelData.id) }
+                                            }
+                                            CalmButton {
+                                                text: "Output"
+                                                onClicked: { root.setupTerminal = "job-" + card.modelData.id; root.controller.uiEvent("setup_output", card.modelData.id) }
+                                            }
+                                            Button {
+                                                text: card.modelData.action
+                                                enabled: !root.controller.jobActive && !root.controller.runActive && card.modelData.state !== "blocked"
+                                                onClicked: root.controller.runJob(card.modelData.id)
+                                            }
+                                        }
+                                        MutedText {
+                                            visible: card.expanded; Layout.fillWidth: true; wrapMode: Text.Wrap
+                                            text: card.modelData.description
+                                        }
+                                        Repeater {
+                                            model: card.expanded ? (card.modelData.details || []) : []
+                                            delegate: Label {
+                                                required property string modelData
+                                                Layout.fillWidth: true; elide: Text.ElideMiddle
+                                                text: modelData; color: "#93A7B8"; font.family: "monospace"; font.pixelSize: 12
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                Layout.fillWidth: true; implicitHeight: imageColumn.implicitHeight + 24
+                                radius: 10; color: "#131E29"; border.color: "#1E2C39"
+                                ColumnLayout {
+                                    id: imageColumn
+                                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 12
+                                    spacing: 6
+                                    Label { text: "Move the project image between machines of the same CPU type"; color: "#EEF5F8"; font.bold: true }
+                                    MutedText { Layout.fillWidth: true; wrapMode: Text.Wrap; text: "Save writes a compressed copy (many GB) to " + (root.setup.images_directory || "images/") + ". Copy that file into the same folder on the other machine, then load it there." }
+                                    RowLayout {
+                                        spacing: 8
+                                        CalmButton { text: "Save image"; enabled: !root.controller.jobActive && !root.controller.runActive; onClicked: root.controller.saveProjectImage() }
+                                        ComboBox { id: savedImages; Layout.preferredWidth: 360; model: root.setup.saved_images || [] }
+                                        CalmButton { text: "Load selected"; enabled: savedImages.count > 0 && !root.controller.jobActive && !root.controller.runActive; onClicked: root.controller.loadProjectImage(savedImages.currentText) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        SectionTitle { text: root.setupTerminal ? "Output: " + root.setupTerminal.replace("job-", "") : "Output" }
+                        Item { Layout.fillWidth: true }
+                        CheckBox { id: followSetup; text: "Follow"; checked: true }
+                        CalmButton { text: "Open log file"; visible: root.setupTerminal !== ""; onClicked: root.controller.openProcessLog(root.setupTerminal) }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredHeight: 2; Layout.minimumHeight: 160
+                        color: "#070C11"; radius: 10; border.color: "#1E2C39"
+                        MutedText { anchors.centerIn: parent; visible: root.setupTerminal === ""; text: "Run a job or press Output on a card to see its terminal." }
+                        ListView {
+                            anchors.fill: parent; anchors.margins: 8; clip: true
+                            model: root.setupTerminal !== "" ? root.controller.terminalModel(root.setupTerminal) : null
+                            reuseItems: true
+                            onCountChanged: if (followSetup.checked) positionViewAtEnd()
+                            ScrollBar.vertical: ScrollBar {}
+                            delegate: Row {
+                                required property string time
+                                required property string html
+                                required property string severity
+                                spacing: 10
+                                Text { text: time; color: "#4F6576"; font.family: "monospace"; font.pixelSize: 12 }
+                                Text {
+                                    text: html; textFormat: Text.StyledText
+                                    color: severity === "error" ? "#FF8992" : (severity === "warning" ? "#E8C468" : "#C8D7E0")
+                                    font.family: "monospace"; font.pixelSize: 12
                                 }
                             }
                         }
@@ -740,7 +978,7 @@ ApplicationWindow {
                                 anchors.fill: parent; anchors.margins: 20
                                 ColumnLayout {
                                     SectionTitle { text: "System readiness" }
-                                    MutedText { text: "T2000 desktop profile · ROS Humble · domain 42" }
+                                    MutedText { text: "ROS Humble · domain 42 · engines and images chosen for this machine" }
                                     MutedText { text: "Run preflight after connecting the UMA16, camera, and robot." }
                                 }
                                 Item { Layout.fillWidth: true }
@@ -798,6 +1036,8 @@ ApplicationWindow {
 
     Dialog {
         id: homeDialog; modal: true; anchors.centerIn: parent; title: "Confirm homing"
+        onOpened: root.controller.uiEvent("dialog_opened", title)
+        onRejected: root.controller.uiEvent("dialog_cancelled", title)
         width: 500
         standardButtons: Dialog.Ok | Dialog.Cancel
         onAccepted: root.controller.requestHome()
@@ -805,6 +1045,8 @@ ApplicationWindow {
     }
     Dialog {
         id: trackingDialog; modal: true; anchors.centerIn: parent; title: "Enable tracking"
+        onOpened: root.controller.uiEvent("dialog_opened", title)
+        onRejected: root.controller.uiEvent("dialog_cancelled", title)
         width: 500
         standardButtons: Dialog.Ok | Dialog.Cancel
         onAccepted: root.controller.enableTracking()
@@ -812,6 +1054,8 @@ ApplicationWindow {
     }
     Dialog {
         id: stopAllDialog; modal: true; anchors.centerIn: parent; title: "Stop the complete run?"
+        onOpened: root.controller.uiEvent("dialog_opened", title)
+        onRejected: root.controller.uiEvent("dialog_cancelled", title)
         width: 500
         standardButtons: Dialog.Ok | Dialog.Cancel
         onAccepted: root.controller.stopAll()
@@ -819,6 +1063,8 @@ ApplicationWindow {
     }
     Dialog {
         id: closeDialog; modal: true; anchors.centerIn: parent; title: "Close control center?"
+        onOpened: root.controller.uiEvent("dialog_opened", title)
+        onRejected: root.controller.uiEvent("dialog_cancelled", title)
         width: 500
         standardButtons: Dialog.Ok | Dialog.Cancel
         onAccepted: root.controller.requestQuit()
@@ -826,6 +1072,8 @@ ApplicationWindow {
     }
     Dialog {
         id: forceStopDialog; modal: true; anchors.centerIn: parent; title: "Confirm physical emergency stop"
+        onOpened: root.controller.uiEvent("dialog_opened", title)
+        onRejected: root.controller.uiEvent("dialog_cancelled", title)
         width: 520
         standardButtons: Dialog.Ok | Dialog.Cancel
         onAccepted: root.controller.forceStopAfterEstop()

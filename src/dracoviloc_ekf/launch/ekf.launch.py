@@ -7,8 +7,6 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('yolo_enabled', default_value='false'),
-        DeclareLaunchArgument('ast_enabled', default_value='false'),
-        DeclareLaunchArgument('gre_enabled', default_value='false'),
         DeclareLaunchArgument('mobilenetv2_ekf_enabled', default_value='false'),
         DeclareLaunchArgument('tracking_frame', default_value='table_mic_link'),
         DeclareLaunchArgument('process_noise', default_value='0.05'),
@@ -32,8 +30,6 @@ def generate_launch_description():
         DeclareLaunchArgument('first_arrival_evidence_ttl_s', default_value='2.0'),
         Node(package='dracoviloc_ekf', executable='ekf_node', output='screen', parameters=[{
             'yolo_enabled': ParameterValue(LaunchConfiguration('yolo_enabled'), value_type=bool),
-            'ast_enabled': ParameterValue(LaunchConfiguration('ast_enabled'), value_type=bool),
-            'gre_enabled': ParameterValue(LaunchConfiguration('gre_enabled'), value_type=bool),
             'mobilenetv2_ekf_enabled': ParameterValue(
                 LaunchConfiguration('mobilenetv2_ekf_enabled'), value_type=bool),
             'process_noise': ParameterValue(

@@ -10,8 +10,9 @@ The current validated architecture is:
 - DracoViLoc, RViz, ODAS, AST, GRE, and physical arm control run on the host.
 - Isaac ROS YOLO runs inside its Docker development container.
 - The host and container exchange ROS 2 topics through DDS.
-- The EKF exists but is deliberately disabled until the individual sensors
-  and their frame alignment have been fully validated.
+- `dracoviloc_ekf` fuses `/yolo/direction` and `/mobilenetv2/direction` into
+  `/ekf/direction` when `fusion_enabled:=true tracking_mode:=ekf`. AST and GRE
+  are not EKF inputs; they only drive the `direct_ast`/`direct_gre` modes.
 
 ## Current data flow
 
@@ -98,11 +99,8 @@ models/gre/model_logmel_meta.json
 models/gre/model_logmel.engine
 ```
 
-The ROS launch expects the engine at:
-
-```text
-src/dracoviloc_audio_fusion/models/model_logmel.engine
-```
+`arm_demo.launch.py` reads the engine and metadata directly from
+`models/gre/`.
 
 ### GRE environment
 
@@ -135,12 +133,6 @@ cd ~/DracoViLoc
   --onnx=$PWD/models/gre/model_logmel.onnx \
   --saveEngine=$PWD/models/gre/model_logmel.engine \
   --fp16
-
-cp models/gre/model_logmel.engine \
-  src/dracoviloc_audio_fusion/models/model_logmel.engine
-
-source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-select dracoviloc_audio_fusion
 ```
 
 Current GRE settings are `threshold_on=0.1`, `threshold_off=0.05`, and
@@ -162,11 +154,8 @@ models/ast/training_report.json
 models/ast/drone_ast.onnx
 ```
 
-The generated runtime engine belongs at:
-
-```text
-src/dracoviloc_audio_fusion/models/drone_ast.engine
-```
+The generated runtime engine belongs at `models/ast/drone_ast.engine`, which
+`arm_demo.launch.py` reads directly.
 
 ### AST runtime environment
 
@@ -224,11 +213,8 @@ large engine:
 cd ~/DracoViLoc
 /usr/src/tensorrt/bin/trtexec \
   --onnx=$PWD/models/ast/drone_ast.onnx \
-  --saveEngine=$PWD/src/dracoviloc_audio_fusion/models/drone_ast.engine \
+  --saveEngine=$PWD/models/ast/drone_ast.engine \
   --fp16
-
-source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-select dracoviloc_audio_fusion
 ```
 
 TensorRT can remain silent after parsing while profiling tactics. Check
@@ -303,7 +289,6 @@ estimated. The mounted-camera convention currently inverts image X and Y.
 ```bash
 cd ~/DracoViLoc
 source /opt/ros/humble/setup.bash
-source ~/odas_ws/install/setup.bash
 source install/setup.bash
 
 ros2 launch dracoviloc_bringup arm_demo.launch.py \
@@ -429,5 +414,5 @@ actually carries and moves the camera.
 
 
 
-ros2 launch dracoviloc_bringup arm_demo.launch.py audio_enabled:=true ast_enabled:=false gre_enabled:=false mobilenetv2_enabled:=true mobilenetv2_ekf_enabled:=true yolo_enabled:=true fusion_enabled:=true tracking_mode:=ekf use_rviz:=true mobilenetv2_engine_path:=$HOME/DracoViLoc/models/mobilenetv2/drone_fp32_t2000.engine hardware_mode:=mock robot_ip:=192.168.58.2 max_tracking_error:=1.57 sss_channels_recording:=true sss_channels_root:=$HOME/DracoViLoc/recordings recording_enabled:=true recording_root:=$HOME/DracoViLoc/runs recording_fps:=15.0 recording_video_topic:=/image
+ros2 launch dracoviloc_bringup arm_demo.launch.py audio_enabled:=true ast_enabled:=false gre_enabled:=false mobilenetv2_enabled:=true mobilenetv2_ekf_enabled:=true yolo_enabled:=true fusion_enabled:=true tracking_mode:=ekf use_rviz:=true hardware_mode:=mock robot_ip:=192.168.58.2 max_tracking_error:=1.57 sss_channels_recording:=true sss_channels_root:=$HOME/DracoViLoc/recordings recording_enabled:=true recording_root:=$HOME/DracoViLoc/runs recording_fps:=15.0 recording_video_topic:=/image
 

@@ -36,7 +36,6 @@ class RunProfile:
     second_arm_x: float = -0.75
     second_arm_y: float = 0.0
     second_arm_z: float = 0.0
-    target_nominal_distance: float = 0.0
     dual_tracking_policy: str = "first_arm_lead"
     lead_lock_tolerance_rad: float = 0.10
     audio_enabled: bool = True
@@ -54,8 +53,10 @@ class RunProfile:
     first_arrival_mode: str = "off"
     recording_root: str = "~/DracoViLoc/runs"
     recording_video_topic: str = "/image"
-    mobilenetv2_engine_path: str = "~/DracoViLoc/models/mobilenetv2/drone_fp32_t2000.engine"
-    mobilenetv2_venv_python: str = "/usr/bin/python3"
+    # "auto" lets the launch pick the engine built for this machine's GPU and
+    # an interpreter with TensorRT + PyCUDA (see host_platform.py).
+    mobilenetv2_engine_path: str = "auto"
+    mobilenetv2_venv_python: str = "auto"
     mobilenetv2_threshold: float = 0.75
     mobilenetv2_votes_required: int = 3
     mobilenetv2_vote_window: int = 5
@@ -76,6 +77,7 @@ class RunProfile:
     require_home_before_tracking: bool = True
     home_duration_s: float = 12.0
     camera: str = "auto"
+    yolo_image: str = "auto"
     yolo_model_path: str = "/workspaces/isaac_ros-dev/models/drone_yolo11n_best.onnx"
     yolo_engine_path: str = "/workspaces/isaac_ros-dev/models/drone_yolo11n_best.plan"
     use_yolo_viewer: bool = False

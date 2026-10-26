@@ -3,11 +3,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .host_platform import AUTO
 from .models import RunProfile
 from .presets import built_in_profiles
 
 
 SCHEMA_VERSION = 1
+LEGACY_ENGINE_DEFAULTS = {
+    "~/DracoViLoc/models/mobilenetv2/drone_fp32.engine",
+    "~/DracoViLoc/models/mobilenetv2/drone_fp32_t2000.engine",
+}
+LEGACY_PYTHON_DEFAULTS = {"~/DracoViLoc/trt_env/bin/python3", "/usr/bin/python3"}
 
 
 class ProfileStore:
@@ -24,17 +30,12 @@ class ProfileStore:
                 return profiles
             for item in payload.get("profiles", []):
                 profile = RunProfile.from_dict(item)
-                # Migrate the former shared local/Jetson defaults. Remote runs
-                # are overridden by the agent; local runs require the T2000
-                # engine and the verified system TensorRT interpreter.
-                if profile.execution_target == "local":
-                    if item.get("mobilenetv2_engine_path") == (
-                            "~/DracoViLoc/models/mobilenetv2/drone_fp32.engine"):
-                        profile.mobilenetv2_engine_path = (
-                            "~/DracoViLoc/models/mobilenetv2/drone_fp32_t2000.engine")
-                    if item.get("mobilenetv2_venv_python") == (
-                            "~/DracoViLoc/trt_env/bin/python3"):
-                        profile.mobilenetv2_venv_python = "/usr/bin/python3"
+                # Former per-machine defaults become "auto", so a saved
+                # profile works on whichever machine opens it.
+                if item.get("mobilenetv2_engine_path") in LEGACY_ENGINE_DEFAULTS:
+                    profile.mobilenetv2_engine_path = AUTO
+                if item.get("mobilenetv2_venv_python") in LEGACY_PYTHON_DEFAULTS:
+                    profile.mobilenetv2_venv_python = AUTO
                 profiles[profile.name] = profile
         except (OSError, ValueError, TypeError):
             return profiles

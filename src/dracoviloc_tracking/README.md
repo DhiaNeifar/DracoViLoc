@@ -43,7 +43,7 @@ update rate. Ruckig tracks the solved aim point continuously; the commanded
 target only moves when it changes by more than `angular_deadband` (0.003 rad
 by default), which just suppresses noise-driven micro-retargeting rather than
 gating a start/stop decision. If measured hardware position falls more
-than `max_tracking_error` (0.35 rad) behind the generated servo state,
+than `max_tracking_error` (0.50 rad) behind the generated servo state,
 tracking stops safely by decelerating Ruckig to zero velocity (jerk-limited,
 so it never overshoots and swings back) rather than re-anchoring the stream
 and causing a jump.

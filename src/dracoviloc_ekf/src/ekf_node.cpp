@@ -68,8 +68,6 @@ public:
     pub_ = create_publisher<Msg>("/ekf/direction", 10);
     legacy_pub_ = create_publisher<Msg>("/ekf_fused_target_pose", 10);
     add_source("yolo_enabled", "/yolo/direction", "yolo_measurement_noise", false, yolo_);
-    add_source("ast_enabled", "/ast/direction", "ast_measurement_noise", true, ast_);
-    add_source("gre_enabled", "/gre/direction", "gre_measurement_noise", true, gre_);
     add_source(
       "mobilenetv2_ekf_enabled", "/mobilenetv2/direction",
       "mobilenetv2_measurement_noise", true, mobilenetv2_);
@@ -230,7 +228,7 @@ private:
   int output_average_window_{5};
   std::deque<Eigen::Vector3d> output_history_;
   Eigen::Matrix<double,6,1> x_; Eigen::Matrix<double,6,6> P_;
-  rclcpp::Publisher<Msg>::SharedPtr pub_, legacy_pub_; Sub yolo_,ast_,gre_,mobilenetv2_;
+  rclcpp::Publisher<Msg>::SharedPtr pub_, legacy_pub_; Sub yolo_,mobilenetv2_;
   rclcpp::Subscription<odas_ros_msgs::msg::OdasSslArrayStamped>::SharedPtr first_arrival_sub_;
 };
 int main(int argc,char **argv){rclcpp::init(argc,argv);rclcpp::spin(std::make_shared<DirectionEkf>());rclcpp::shutdown();}

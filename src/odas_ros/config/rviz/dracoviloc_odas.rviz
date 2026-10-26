@@ -37,7 +37,7 @@ Visualization Manager:
           Value: true
         base_link:
           Value: true
-        d435i_link:
+        micarray_camera_link:
           Value: true
         drone_base_link:
           Value: true

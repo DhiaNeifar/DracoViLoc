@@ -6,7 +6,7 @@ on the two audio problems that motivated the work: **the `/sss` stream
 recording nothing**, and **recorded/classified sound being far too quiet**.
 
 The original Jetson workflow remains documented in `README.md`; the
-copy-paste launch workflow for this machine is in `INSTRUCTION.md`.
+copy-paste launch workflow for this machine is in `instruction.md`.
 
 ---
 
@@ -19,7 +19,7 @@ copy-paste launch workflow for this machine is in `INSTRUCTION.md`.
 | Audio pipeline | 5 corrective fixes from `reportv2.md` implemented (C + Python), 52 tests passing |
 | New feature | Per-channel `/sss` WAV recorder (`recordings/<date_time>/channel_N.wav`) |
 | Loudness | +24 dB digital gain on `/sss` (bridge, default ON) + optional trim gain in the recorder |
-| Bug fix | AST/GRE launch-argument collision in `arm_audio_demo.launch.py` |
+| Bug fix | AST/GRE launch-argument collision in `arm_demo.launch.py` |
 | Verification | Live drone-audio tests: AST 82–90% [DRONE], GRE decision=DRONE, recordings loud and valid |
 
 ---
@@ -144,7 +144,7 @@ So: real bugs (now fixed) + weak acoustic staging (addressed below).
 - `gain_db` parameter (same float math + saturation) applied per channel
   while deinterleaving, before writing. Exposed as `gain_db` in
   `src/dracoviloc_recording/launch/sss_channels.launch.py` and as
-  `sss_channels_gain_db` in `arm_audio_demo.launch.py`.
+  `sss_channels_gain_db` in `arm_demo.launch.py`.
 - Keep it at 0.0 in normal use — `/sss` is already boosted at the bridge;
   adding both gains double-boosts (+48 dB) and clips.
 
@@ -178,7 +178,7 @@ launch from a second terminal. Output: `recordings/<DD_MM_YYYY_HH_MM_SS>/`
 
 ## 5. Launch bug fix (existed on the Jetson too)
 
-`src/dracoviloc_bringup/launch/arm_audio_demo.launch.py`
+`src/dracoviloc_bringup/launch/arm_demo.launch.py`
 
 AST and GRE are included as sibling launch descriptions, and ROS 2 shares
 the launch context across them — so GRE inherited AST's `venv_python`,
@@ -221,10 +221,10 @@ silence, exactly one arrow appears while a source is tracked.
 - `src/dracoviloc_recording/CMakeLists.txt` *(edited)*
 
 **Launch integration:**
-- `src/dracoviloc_bringup/launch/arm_audio_demo.launch.py` *(AST/GRE arg fix + recorder args)*
+- `src/dracoviloc_bringup/launch/arm_demo.launch.py` *(AST/GRE arg fix + recorder args)*
 
 **Docs & repo:**
-- `INSTRUCTION.md` *(new — x86 laptop workflow, updated with corrections/gain)*
+- `instruction.md` *(new — x86 laptop workflow, updated with corrections/gain)*
 - `.gitignore` *(added `/recordings/`)*
 - `reportv2.md` *(pre-existing corrective plan, kept at repo root)*
 

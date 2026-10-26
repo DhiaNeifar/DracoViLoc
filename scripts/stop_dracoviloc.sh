@@ -3,7 +3,8 @@
 set -uo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ISAAC_CONTAINER="${ISAAC_CONTAINER:-isaac_ros_dev-x86_64-container}"
+# isaac_yolo is started by the GUI and remote agent; the others by run_dev.sh.
+ISAAC_CONTAINERS="${ISAAC_CONTAINERS:-isaac_yolo isaac_ros_dev-x86_64-container isaac_ros_dev-aarch64-container}"
 GRACE_SECONDS="${GRACE_SECONDS:-8}"
 DRY_RUN=false
 
@@ -18,7 +19,7 @@ fi
 # Isaac ROS YOLO pipelines. Descendants of a matched launch process are also
 # included, which catches RViz and controller processes without killing an
 # unrelated RViz session.
-PROJECT_PATTERN="${PROJECT_ROOT}|/workspaces/isaac_ros-dev|dracoviloc_|arm_audio_demo\.launch\.py|isaac_ros_yolo_direction|yolo_camera\.launch\.py|odas_ros|odas_(core|server|visualization)_node|arm_audio_tracker"
+PROJECT_PATTERN="${PROJECT_ROOT}|/workspaces/isaac_ros-dev|dracoviloc_|arm_demo\.launch\.py|isaac_ros_yolo_direction|yolo_camera\.launch\.py|odas_ros|odas_(core|server|visualization)_node|arm_audio_tracker"
 GENERIC_ROS_PATTERN="/opt/ros/.*/(robot_state_publisher|move_group|rviz2|static_transform_publisher|ros2_control_node|component_container[^[:space:]]*)"
 
 declare -A parent_by_pid=()
@@ -93,14 +94,16 @@ if command -v docker >/dev/null 2>&1; then
   fi
 fi
 
-container_running=false
+running_containers=()
 if $docker_available; then
-  if "${docker_prefix[@]}" ps --format '{{.Names}}' | grep -Fxq "$ISAAC_CONTAINER"; then
-    container_running=true
-    echo "  Container: $ISAAC_CONTAINER (running)"
-  else
-    echo "  Container: $ISAAC_CONTAINER (not running)"
-  fi
+  for container in $ISAAC_CONTAINERS; do
+    if "${docker_prefix[@]}" ps --format '{{.Names}}' | grep -Fxq "$container"; then
+      running_containers+=("$container")
+      echo "  Container: $container (running)"
+    else
+      echo "  Container: $container (not running)"
+    fi
+  done
 else
   echo "  Docker could not be inspected with the current permissions."
 fi
@@ -161,10 +164,10 @@ if [[ ${#project_pids[@]} -gt 0 ]]; then
   fi
 fi
 
-if $container_running; then
-  echo "Stopping container $ISAAC_CONTAINER..."
-  "${docker_prefix[@]}" stop --time 10 "$ISAAC_CONTAINER" >/dev/null
-fi
+for container in "${running_containers[@]}"; do
+  echo "Stopping container $container..."
+  "${docker_prefix[@]}" stop --time 10 "$container" >/dev/null
+done
 
 failed=false
 if $docker_unverified; then
@@ -177,10 +180,12 @@ for pid in "${project_pids[@]}"; do
     failed=true
   fi
 done
-if $docker_available && "${docker_prefix[@]}" ps --format '{{.Names}}' | grep -Fxq "$ISAAC_CONTAINER"; then
-  echo "  Still running: container $ISAAC_CONTAINER" >&2
-  failed=true
-fi
+for container in "${running_containers[@]}"; do
+  if "${docker_prefix[@]}" ps --format '{{.Names}}' | grep -Fxq "$container"; then
+    echo "  Still running: container $container" >&2
+    failed=true
+  fi
+done
 
 if $failed; then
   echo "Cleanup incomplete. Re-run with sufficient permissions." >&2

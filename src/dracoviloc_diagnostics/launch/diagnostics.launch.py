@@ -13,7 +13,7 @@ def generate_launch_description():
             "ee_frame", default_value="wrist3_link",
             description="TF frame treated as the end effector for position/"
                         "velocity/acceleration/jerk (e.g. wrist3_link, "
-                        "d435i_link, or odas_link)."),
+                        "micarray_camera_link, or odas_link)."),
         DeclareLaunchArgument(
             "smoothing_alpha", default_value="0.3",
             description="Exponential smoothing applied to the "

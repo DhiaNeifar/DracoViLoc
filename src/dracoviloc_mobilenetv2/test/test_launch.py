@@ -53,7 +53,7 @@ def test_ekf_choice_is_independent_of_classifier(participates):
     assert len(includes) == 3
     ekf_arguments = dict(includes[-1].launch_arguments)
     assert ekf_arguments['mobilenetv2_ekf_enabled'] == participates
-    assert ekf_arguments['ast_enabled'] == 'false'
+    assert 'ast_enabled' not in ekf_arguments
 
 
 @pytest.mark.parametrize('mode,enabled', [('direct_ast', 'ast_enabled'),
@@ -75,7 +75,7 @@ def test_classifier_launch_defaults_do_not_leak(override):
         mobilenetv2_enabled='true',
         mobilenetv2_ekf_enabled='false', mobilenetv2_engine_path=override,
         mobilenetv2_venv_python='', ast_threshold='0.20', mobilenetv2_threshold='0.75',
-        first_arrival_mode='off',
+        first_arrival_mode='off', uma16_card='0',
         diagnostics_enabled='false',
         odas_diagnostics_log_path='', odas_diagnostics_interval_s='10.0',
         first_arrival_min_confidence='0.70', first_arrival_onset_snr_db='10.0',
@@ -118,7 +118,11 @@ def test_classifier_launch_defaults_do_not_leak(override):
     assert ast[ast.index('--engine') + 1].endswith('/models/ast/drone_ast.engine')
     assert gre[gre.index('--engine') + 1].endswith('/models/gre/model_logmel.engine')
     assert '/gre_env/' in gre[0]
-    assert mobile[mobile.index('--engine-path') + 1] == (
-        override or str(REPO / 'models/mobilenetv2/drone_fp32.engine'))
+    if override:
+        assert mobile[mobile.index('--engine-path') + 1] == override
+    else:
+        # 'auto' resolves to the engine built for this machine's GPU.
+        assert mobile[mobile.index('--engine-path') + 1].startswith(
+            str(REPO / 'models/mobilenetv2/drone_fp32'))
     assert mobile[mobile.index('--threshold') + 1] == '0.75'
     assert 'engine_path' not in context.launch_configurations

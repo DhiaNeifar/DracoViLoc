@@ -12,7 +12,7 @@ class AgentConfig:
     recordings_root: str = "~/DracoViLoc/runs"
     listen_host: str = "127.0.0.1"
     listen_port: int = 48721
-    yolo_image: str = "isaac_ros_dev-aarch64:latest"
+    yolo_image: str = "auto"
     yolo_entrypoint: str = ""
     camera_topic: str = "/yolov8_processed_image"
     camera_fps: float = 10.0

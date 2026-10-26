@@ -7,6 +7,7 @@ import socket
 import subprocess
 from pathlib import Path
 
+from .host_platform import AUTO, gpu_name, resolve_mobilenet_runtime, resolve_yolo_image
 from .models import CheckResult, RunProfile
 from .validation import validate_profile
 
@@ -31,6 +32,21 @@ def _run_ok(command: list[str], timeout: float = 3.0) -> tuple[bool, str]:
         return result.returncode == 0, output
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, str(exc)
+
+
+def _drive_sync_check() -> CheckResult:
+    """Recordings are uploaded by the sync-runs-to-drive timer (rclone)."""
+    label = "Google Drive upload of recordings"
+    if not shutil.which("rclone"):
+        return CheckResult("drive_sync", label, False,
+                           "rclone is not installed; see docs/DRIVE_SYNC.md", blocking=False)
+    timer_ok, timer_state = _run_ok(
+        ["systemctl", "--user", "is-active", "sync-runs-to-drive.timer"])
+    if not timer_ok:
+        return CheckResult("drive_sync", label, False,
+                           f"Sync timer is {timer_state or 'not installed'}; "
+                           "run scripts/install_drive_sync.sh", blocking=False)
+    return CheckResult("drive_sync", label, True, "Sync timer active")
 
 
 def run_preflight(project_root: Path, profile: RunProfile) -> list[CheckResult]:
@@ -63,19 +79,27 @@ def run_preflight(project_root: Path, profile: RunProfile) -> list[CheckResult]:
         sound_cards = Path("/proc/asound/cards").read_text(errors="ignore") if Path("/proc/asound/cards").exists() else ""
         match = re.search(r"^\s*(\d+)\s+\[[^]]+\].*(?:UMA16|miniDSP)", sound_cards, re.MULTILINE | re.IGNORECASE)
         has_uma = match is not None
+        # ODAS is pointed at the detected card at launch (uma16_card:=auto).
         results.append(CheckResult(
             "uma16", "UMA16 microphone", has_uma,
             f"Detected as ALSA card {match.group(1)}" if match else "Not detected", True))
-        if match:
-            configuration = (project_root / "src/odas_ros/config/configuration.cfg").read_text(encoding="utf-8")
-            configured = re.search(r"card\s*=\s*(\d+)\s*;", configuration)
-            card_matches = configured is not None and configured.group(1) == match.group(1)
-            results.append(CheckResult(
-                "alsa_config", "ODAS ALSA card", card_matches,
-                f"Configuration uses card {configured.group(1) if configured else 'unknown'}; device is card {match.group(1)}"))
     if profile.mobilenetv2_enabled:
-        engine = Path(profile.mobilenetv2_engine_path).expanduser()
-        python = Path(profile.mobilenetv2_venv_python).expanduser()
+        engine_setting = profile.mobilenetv2_engine_path
+        python_setting = profile.mobilenetv2_venv_python
+        if AUTO in (engine_setting, python_setting):
+            selected = resolve_mobilenet_runtime(project_root)
+            results.append(CheckResult(
+                "mobilenet_runtime", "MobileNetV2 runtime for this machine",
+                "error" not in selected, selected.get("error") or
+                f"{selected['gpu']}: {Path(selected['engine']).name}"))
+            if "error" in selected:
+                selected = {"engine": "", "python": ""}
+            if engine_setting == AUTO:
+                engine_setting = selected["engine"]
+            if python_setting == AUTO:
+                python_setting = selected["python"]
+        engine = Path(engine_setting).expanduser()
+        python = Path(python_setting).expanduser()
         results.append(CheckResult(
             "mobilenet_python", "MobileNetV2 Python runtime",
             python.is_file() and os.access(python, os.X_OK), str(python)))
@@ -113,9 +137,13 @@ def run_preflight(project_root: Path, profile: RunProfile) -> list[CheckResult]:
                 "Already running" if container_running else
                 "Stopped stale container will be removed before launch"),
             blocking=container_running))
+        image = resolve_yolo_image(profile.yolo_image)
         image_ok, image_detail = _run_ok([
-            "docker", "image", "inspect", "isaac_ros_yolo:draco-t2000", "--format", "{{.Id}}"])
-        results.append(CheckResult("yolo_image", "YOLO container image", image_ok, image_detail or "Missing"))
+            "docker", "image", "inspect", image, "--format", "{{.Id}}"]) if image else (
+                False, "No known Isaac ROS image for this CPU architecture")
+        results.append(CheckResult(
+            "yolo_image", "YOLO container image", image_ok,
+            image if image_ok else f"Missing: {image or image_detail}"))
         results.append(_exists(
             "isaac_workspace", "Isaac ROS workspace",
             Path.home() / "workspaces/isaac_ros-dev/install/setup.bash"))
@@ -135,11 +163,10 @@ def run_preflight(project_root: Path, profile: RunProfile) -> list[CheckResult]:
             "camera", "icSpring camera", camera_found,
             "Detected" if camera_found else "Not detected"))
     if profile.yolo_enabled or profile.mobilenetv2_enabled or profile.ast_enabled or profile.gre_enabled:
-        gpu_ok, gpu_detail = _run_ok([
-            "nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], 3.0)
-        t2000 = gpu_ok and "T2000" in gpu_detail
+        gpu = gpu_name()
         results.append(CheckResult(
-            "gpu", "Quadro T2000", t2000, gpu_detail or "NVIDIA GPU unavailable"))
+            "gpu", "NVIDIA GPU (TensorRT)", bool(gpu),
+            gpu or "Not found; YOLO and the audio classifiers need an NVIDIA GPU"))
     if profile.hardware_mode == "real":
         controllers = (
             (("left_robot", "Left FAIRINO cobot", profile.left_robot_ip),
@@ -155,6 +182,8 @@ def run_preflight(project_root: Path, profile: RunProfile) -> list[CheckResult]:
         results.append(_exists(
             "fairino_sdk", "FAIRINO SDK",
             project_root / "src/fairino_hardware/libfairino/lib/libfairino.so"))
+    if profile.recording_enabled or profile.yolo_enabled:
+        results.append(_drive_sync_check())
     ffmpeg = shutil.which("ffmpeg")
     results.append(CheckResult(
         "ffmpeg", "FFmpeg", bool(ffmpeg), ffmpeg or "Not installed",

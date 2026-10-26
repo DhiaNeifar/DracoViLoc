@@ -37,11 +37,10 @@ namespace fs = std::filesystem;
 // arm_tracker  -  Single and Dual-Arm Coordinated Drone Tracking Controller
 //
 // Dual-arm coordination:
-// - Arm 1 (Left / Primary) carries the microphone array and camera sensors.
-//   It resolves target direction in world frame and servos joint1/joint4.
-// - Arm 2 (Right / Follower) receives target info from Arm 1.
-//   It computes parallax gaze convergence based on the -75 cm baseline (left of Arm 1)
-//   and target_nominal_distance (default 3.0 m).
+// - Both arms are handled identically: same home pose, same frozen joints
+//   2/3/5/6, and the same world-frame target direction solved on joint1/joint4.
+//   Their gaze rays are therefore parallel.
+// - Arm 1 (left_* joints) is the lead arm; Arm 2 (right_* joints) follows it.
 // - Co-tracking policy:
 //   "first_arm_lead" (default): Arm 1 turns first to lock on the drone within
 //   lead_lock_tolerance_rad (default 0.10 rad); once locked, Arm 2 slews to co-track.
@@ -52,10 +51,6 @@ class ArmTracker : public rclcpp::Node {
 public:
   ArmTracker() : Node("arm_tracker") {
     dual_arm_ = declare_parameter("dual_arm", false);
-    second_arm_x_ = declare_parameter("second_arm_x", -0.75);
-    second_arm_y_ = declare_parameter("second_arm_y", 0.0);
-    second_arm_z_ = declare_parameter("second_arm_z", 0.0);
-    target_nominal_distance_ = declare_parameter("target_nominal_distance", 0.0);
     dual_tracking_policy_ = declare_parameter("dual_tracking_policy", std::string("first_arm_lead"));
     lead_lock_tolerance_rad_ = declare_parameter("lead_lock_tolerance_rad", 0.10);
 
@@ -178,11 +173,10 @@ public:
     timer_ = create_wall_timer(command_period, [this]() { update(); });
 
     RCLCPP_INFO(get_logger(),
-      "ArmTracker initialized [%s mode]. Mode: %s. Policy: %s (nom_dist: %.1fm). Command rate: %.1f Hz.",
+      "ArmTracker initialized [%s mode]. Mode: %s. Policy: %s. Command rate: %.1f Hz.",
       dual_arm_ ? "DUAL-ARM" : "SINGLE-ARM",
       ekf_enabled_ ? "EKF" : "direct",
       dual_arm_ ? dual_tracking_policy_.c_str() : "N/A",
-      target_nominal_distance_,
       command_rate_hz_);
   }
 
@@ -801,20 +795,9 @@ private:
         }
 
         if (arm2_should_track) {
-          // Binocular convergence vector for Arm 2:
-          // Target 3D point in world = target_nominal_distance * desired
-          // Arm 2 base = (second_arm_x, second_arm_y, second_arm_z)
-          Eigen::Vector3d desired_arm2;
-          if (target_nominal_distance_ > 0.0) {
-            const Eigen::Vector3d p_target = target_nominal_distance_ * desired;
-            const Eigen::Vector3d p_arm2(second_arm_x_, second_arm_y_, second_arm_z_);
-            desired_arm2 = (p_target - p_arm2).normalized();
-          } else {
-            desired_arm2 = desired; // Pure parallel gaze
-          }
-
+          // Arm 2 is solved exactly like Arm 1, against the same direction.
           const auto candidate_right = solve(
-            servo_input_right_.current_position, desired_arm2, fixed_right_, wrist_lookup_right_);
+            servo_input_right_.current_position, desired, fixed_right_, wrist_lookup_right_);
           const double update_error_right = angle(
             microphone_normal(candidate_right), microphone_normal(servo_input_right_.target_position));
           if (update_error_right >= angular_deadband_) {
@@ -897,8 +880,6 @@ private:
 
   // Configuration and state
   bool dual_arm_{false};
-  double second_arm_x_{-0.75}, second_arm_y_{0.0}, second_arm_z_{0.0};
-  double target_nominal_distance_{0.0};
   std::string dual_tracking_policy_{"first_arm_lead"};
   double lead_lock_tolerance_rad_{0.10};
   bool arm1_locked_{false};

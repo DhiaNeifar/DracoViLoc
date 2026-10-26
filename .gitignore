@@ -4,6 +4,8 @@ build/
 install/
 log/
 runs/
+# Exported project Docker images (Setup & builds > Save image)
+images/
 
 # ROS 2 colcon files
 *.pyc

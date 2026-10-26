@@ -34,11 +34,9 @@ def validate_profile(profile: RunProfile) -> list[str]:
             except ValueError:
                 errors.append(f"{label} IP address is invalid.")
         geometry = (profile.second_arm_x, profile.second_arm_y, profile.second_arm_z,
-                    profile.target_nominal_distance, profile.lead_lock_tolerance_rad)
+                    profile.lead_lock_tolerance_rad)
         if not all(math.isfinite(value) for value in geometry):
             errors.append("Dual-cobot geometry values must be finite.")
-        if profile.target_nominal_distance < 0:
-            errors.append("Target nominal distance cannot be negative.")
         if profile.lead_lock_tolerance_rad <= 0:
             errors.append("Lead lock tolerance must be positive.")
     if profile.tracking_mode not in TRACKING_MODES:
@@ -55,6 +53,10 @@ def validate_profile(profile: RunProfile) -> list[str]:
         profile.mobilenetv2_enabled and profile.fusion_enabled
     ):
         errors.append("MobileNetV2 EKF input requires MobileNetV2 and fusion.")
+    if profile.yolo_enabled and not profile.recording_enabled:
+        errors.append("Raw camera recording is mandatory whenever YOLO/camera is enabled.")
+    if profile.yolo_enabled and profile.recording_video_topic != "/image":
+        errors.append("The camera recording must use the raw /image topic.")
     if profile.recording_enabled and not (profile.audio_enabled or profile.yolo_enabled):
         errors.append("Recording requires audio or YOLO.")
     if profile.first_arrival_mode != "off" and not profile.audio_enabled:
@@ -75,8 +77,8 @@ def validate_profile(profile: RunProfile) -> list[str]:
     if profile.tracking_mode == "ekf":
         if not profile.fusion_enabled:
             errors.append("EKF tracking requires fusion.")
-        if not (profile.audio_enabled or profile.yolo_enabled):
-            errors.append("EKF tracking requires audio or YOLO.")
+        if not (profile.yolo_enabled or profile.mobilenetv2_ekf_enabled):
+            errors.append("EKF tracking requires YOLO or MobileNetV2 EKF input.")
     for name in ("max_velocity", "max_acceleration", "max_jerk", "command_rate_hz"):
         value = getattr(profile, name)
         if not math.isfinite(value) or value <= 0:

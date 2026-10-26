@@ -39,7 +39,8 @@ def test_remote_launch_forces_dashboard_only_and_jetson_recordings(tmp_path):
     })
     assert "use_rviz:=false" in args
     assert f"recording_root:={tmp_path / 'runs'}" in args
-    assert f"mobilenetv2_venv_python:={tmp_path / 'trt_env/bin/python3'}" in args
+    assert "mobilenetv2_engine_path:=auto" in args
+    assert "mobilenetv2_venv_python:=auto" in args
     assert not any("ssh_alias" in arg for arg in args)
 
 

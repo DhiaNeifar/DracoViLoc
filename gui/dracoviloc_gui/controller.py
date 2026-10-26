@@ -1,27 +1,41 @@
 from __future__ import annotations
 
+import functools
 import json
+import shlex
 import re
-import subprocess
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, Property, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtCore import QUrl
 
+from . import docker_control, jobs
 from .commands import runtime_environment, sourced_host_command, yolo_docker_command
 from .models import AppState, LogEvent, RunProfile
 from .preflight import blocking_failures, run_preflight
-from .processes import ProcessSupervisor
 from .profiles import ProfileStore
 from .presets import built_in_profiles
 from .recordings import discover_recordings, drive_sync_status, trigger_drive_sync
 from .remote_client import RemoteJetsonClient
 from .ros_bridge import RosBridge
+from .session_log import SessionLog
+from .terminal import TerminalHub, TerminalModel, severity_of, split_line, strip_ansi
+from .units import UnitSupervisor
 from .validation import validate_profile
+
+
+def audited(slot):
+    """Record every operator action (QML -> controller call) before running it."""
+    @functools.wraps(slot)
+    def wrapper(self, *args):
+        self.session.event("action", "operator", "info", slot.__name__,
+                           {"args": list(args)} if args else None)
+        return slot(self, *args)
+    return wrapper
 
 
 class AppController(QObject):
@@ -36,6 +50,9 @@ class AppController(QObject):
     cameraFrame = Signal(object)
     quitReady = Signal()
     remoteChanged = Signal()
+    processesChanged = Signal()
+    setupChanged = Signal()
+    _jobQueueReady = Signal()
 
     def __init__(self, project_root: Path) -> None:
         super().__init__()
@@ -51,7 +68,30 @@ class AppController(QObject):
         self._status: dict = {}
         self._remote_state: dict = {"state": "disconnected", "has_control": False}
         self._shutting_down_for_quit = False
-        self.processes = ProcessSupervisor(self._log, self._process_exited)
+        self.session = SessionLog(Path(self._profile.recording_root).expanduser(), project_root)
+        self._last_logged_message = ""
+        self.messageChanged.connect(self._log_message)
+        self.terminals = TerminalHub(self)
+        self.terminals.terminalsChanged.connect(self.processesChanged)
+        self.processes = UnitSupervisor(
+            self.session, self._process_lines, self._process_exited, self.processesChanged.emit)
+        self.processesChanged.connect(self.stateChanged)
+        for name in self.processes.running():
+            self.terminals.model(name)
+        if self.processes.is_running("host"):
+            self._state = AppState.READY
+            self._message = ("Reattached to a run that was already active. "
+                             "Motion state is unknown: use STOP MOTION if unsure.")
+            self.session.event("state", "gui", "warning", self._message,
+                               {"state": self._state.value})
+        self._setup: dict[str, dict] = {}
+        self._job_queue: list[str] = []
+        self._current_job = next(
+            (name[len("job-"):] for name in self.processes.running() if name.startswith("job-")), "")
+        self._checking_setup = False
+        # Jobs are started on the GUI thread even when a worker thread decides
+        # the next one should run (terminal models belong to this thread).
+        self._jobQueueReady.connect(self._start_next_job, Qt.QueuedConnection)
         self.ros = RosBridge(self._ros_status, self._log, self._camera_frame)
         self.ros.start()
         self.remote = RemoteJetsonClient(
@@ -85,27 +125,89 @@ class AppController(QObject):
     def remoteControllable(self) -> bool:
         return bool(self.remote.connected and self.remote.has_control)
 
+    @Property(str, notify=processesChanged)
+    def processesJson(self) -> str:
+        units = {unit["name"]: unit for unit in self.processes.snapshot()}
+        for name in self.terminals.names():
+            if self.terminals.model(name).rowCount():
+                units.setdefault(name, {"name": name, "state": "inactive"})
+        return json.dumps(list(units.values()))
+
+    @Property(str, constant=True)
+    def sessionLogDirectory(self) -> str:
+        return str(self.session.directory)
+
+    @Slot(str, result=QObject)
+    def terminalModel(self, name: str) -> TerminalModel:
+        return self.terminals.model(name)
+
+    @Property(str, notify=setupChanged)
+    def setupJson(self) -> str:
+        return json.dumps({
+            "jobs": [self._setup.get(job.id, jobs.describe(job, jobs.JobStatus(jobs.UNKNOWN, "Not checked yet")))
+                     for job in jobs.JOBS],
+            "current": self._current_job, "queue": self._job_queue,
+            "checking": self._checking_setup,
+            "images_directory": str(self.project_root / "images"),
+            "saved_images": sorted(path.name for path in (self.project_root / "images").glob("*.tar.gz")),
+        })
+
+    @Property(bool, notify=setupChanged)
+    def jobActive(self) -> bool:
+        return bool(self._current_job)
+
+    def _run_processes(self) -> list[str]:
+        """Running subsystem units; setup jobs are not part of a run."""
+        return [name for name in self.processes.running() if not name.startswith("job-")]
+
     @Property(bool, notify=stateChanged)
     def runActive(self) -> bool:
         if self._profile.execution_target == "remote":
             return bool(self._status.get("run_active"))
-        return bool(self.processes.running()) or self._state not in {
+        return bool(self._run_processes()) or self._state not in {
             AppState.IDLE, AppState.FAULT,
         }
 
+    def _log_message(self) -> None:
+        # Messages that arrive with a state change are already in that event.
+        if self._message != self._last_logged_message:
+            self._last_logged_message = self._message
+            self.session.event("message", "gui", "info", self._message)
+
     def _set_state(self, state: AppState, message: str | None = None) -> None:
+        previous = self._state
         self._state = state
+        if message is not None:
+            self._last_logged_message = message
+        self.session.event(
+            "state", "gui", "error" if state == AppState.FAULT else "info",
+            message or state.value, {"from": previous.value, "to": state.value})
         self.stateChanged.emit()
         if message is not None:
             self._message = message
             self.messageChanged.emit()
 
     def _log(self, subsystem: str, severity: str, message: str) -> None:
+        self.session.event("log", subsystem, severity, message)
         event = LogEvent(datetime.now().isoformat(timespec="seconds"), subsystem, severity, message)
         self.logAdded.emit(json.dumps(event.to_dict()))
 
+    def _process_lines(self, name: str, lines: list[str]) -> None:
+        """Called from the tail thread; the full output is already on disk."""
+        self.terminals.linesArrived.emit(name, lines)
+        for line in lines:
+            text = strip_ansi(split_line(line)[1])
+            severity = severity_of(text)
+            if severity != "info":
+                event = LogEvent(datetime.now().isoformat(timespec="seconds"), name, severity, text)
+                self.logAdded.emit(json.dumps(event.to_dict()))
+
     def _process_exited(self, name: str, code: int) -> None:
-        self._log(name, "info" if code == 0 else "error", f"Process exited with code {code}")
+        if name.startswith("job-"):
+            self._job_finished(name[len("job-"):], code)
+        event = LogEvent(datetime.now().isoformat(timespec="seconds"), name,
+                         "info" if code == 0 else "error", f"Process exited with code {code}")
+        self.logAdded.emit(json.dumps(event.to_dict()))
         if name == "host" and self._state not in {AppState.SHUTTING_DOWN, AppState.IDLE}:
             self._set_state(AppState.FAULT, "The host launch exited unexpectedly.")
 
@@ -173,22 +275,26 @@ class AppController(QObject):
         self.remote.call(command, args or {}, complete)
 
     @Slot()
+    @audited
     def connectRemote(self) -> None:
         self.remote.connect(self._profile.ssh_alias, self._profile.remote_agent_port)
 
     @Slot()
+    @audited
     def disconnectRemote(self) -> None:
         self.remote.disconnect(release=True)
         self._remote_state = {"state": "disconnected", "has_control": False}
         self.remoteChanged.emit()
 
     @Slot()
+    @audited
     def acquireRemoteControl(self) -> None:
         self.remote.acquire_control(lambda ok, result: self._log(
             "remote", "info" if ok else "error",
             "Control acquired" if ok else str(result)))
 
     @Slot()
+    @audited
     def deployRemoteAgent(self) -> None:
         if self.runActive:
             self._message = "Stop the active run before updating the Jetson agent."
@@ -199,7 +305,7 @@ class AppController(QObject):
             "isaac_root": self._profile.jetson_isaac_root,
             "recordings_root": self._profile.remote_recordings_root,
             "listen_host": "127.0.0.1", "listen_port": self._profile.remote_agent_port,
-            "yolo_image": "isaac_ros_dev-aarch64:latest",
+            "yolo_image": "auto",
             "camera_topic": "/yolov8_processed_image", "camera_fps": 10.0,
         }
         self._message = "Deploying the Jetson agent over SSH…"
@@ -214,6 +320,7 @@ class AppController(QObject):
         self.remote.deploy(self._profile.ssh_alias, source, config, complete)
 
     @Slot(str)
+    @audited
     def selectProfile(self, name: str) -> None:
         if self.runActive or name not in self._profiles:
             return
@@ -223,6 +330,7 @@ class AppController(QObject):
         self.messageChanged.emit()
 
     @Slot(str)
+    @audited
     def saveProfile(self, name: str) -> None:
         name = name.strip()
         if self.runActive or not name:
@@ -255,13 +363,24 @@ class AppController(QObject):
                 converted = float(value)
             else:
                 converted = str(value)
+            if name == "recording_enabled" and not converted and self._profile.yolo_enabled:
+                self._message = "Raw camera recording is always on while the camera is enabled."
+                self.messageChanged.emit()
+                self.profileChanged.emit()
+                return
+            previous = getattr(self._profile, name)
             setattr(self._profile, name, converted)
+            if name == "yolo_enabled" and converted:
+                self._profile.recording_enabled = True
+            self.session.event("action", "operator", "info", f"Setting changed: {name}",
+                               {"name": name, "from": previous, "to": converted})
             self.profileChanged.emit()
         except (TypeError, ValueError):
             self._message = f"Invalid value for {name}."
             self.messageChanged.emit()
 
     @Slot(str, str)
+    @audited
     def setExpertOption(self, name: str, value: str) -> None:
         if self.runActive or name not in self._launch_argument_names:
             self._message = "Choose a valid declared launch argument."
@@ -273,6 +392,7 @@ class AppController(QObject):
         self.messageChanged.emit()
 
     @Slot()
+    @audited
     def runPreflight(self) -> None:
         if self.runActive:
             return
@@ -303,8 +423,12 @@ class AppController(QObject):
         threading.Thread(target=work, daemon=True).start()
 
     @Slot()
+    @audited
     def startRun(self) -> None:
         if self.runActive:
+            return
+        if self._current_job:
+            self._set_message(f"Wait for the '{self._current_job}' setup job to finish first.")
             return
         errors = validate_profile(self._profile)
         if errors:
@@ -345,25 +469,18 @@ class AppController(QObject):
 
     def _start_pipeline(self) -> None:
         env = runtime_environment()
+        commands = {"host": sourced_host_command(self.project_root, self._profile)}
+        if self._profile.yolo_enabled:
+            commands["yolo"] = yolo_docker_command(self.project_root, self._profile)
+        run_record = self.session.record_run(self._profile.to_dict(), commands)
+        self.session.event("run", "gui", "info", "Run starting",
+                           {"profile": self._profile.name, "record": str(run_record)})
         try:
             if self._profile.yolo_enabled:
                 self._set_state(AppState.STARTING_YOLO, "Starting the YOLO container…")
-                stale = subprocess.run(
-                    ["docker", "container", "inspect", "isaac_yolo",
-                     "--format", "{{.State.Running}}"],
-                    capture_output=True, text=True, timeout=3.0)
-                if stale.returncode == 0 and stale.stdout.strip().lower() == "false":
-                    removed = subprocess.run(
-                        ["docker", "rm", "isaac_yolo"],
-                        capture_output=True, text=True, timeout=5.0)
-                    if removed.returncode != 0:
-                        raise RuntimeError(
-                            "Could not remove the stopped isaac_yolo container: " +
-                            (removed.stderr.strip() or "unknown Docker error"))
+                if docker_control.remove_if_stopped():
                     self._log("yolo", "info", "Removed stopped stale isaac_yolo container")
-                self.processes.start(
-                    "yolo", yolo_docker_command(self.project_root, self._profile),
-                    self.project_root, env)
+                self.processes.start("yolo", commands["yolo"], self.project_root, env)
                 deadline = time.monotonic() + 45.0
                 while time.monotonic() < deadline:
                     if not self.processes.is_running("yolo"):
@@ -375,15 +492,14 @@ class AppController(QObject):
                     self.processes.stop("yolo")
                     raise RuntimeError("YOLO did not publish /image within 45 seconds.")
             self._set_state(AppState.STARTING_HOST, "Starting the DracoViLoc host stack…")
-            self.processes.start(
-                "host", sourced_host_command(self.project_root, self._profile),
-                self.project_root, env)
+            self.processes.start("host", commands["host"], self.project_root, env)
             self._set_state(AppState.READY, "Run active. Motion remains disabled.")
         except Exception as exc:
             self._log("supervisor", "error", str(exc))
             self._set_state(AppState.FAULT, str(exc))
 
     @Slot()
+    @audited
     def requestHome(self) -> None:
         if self._state not in {AppState.READY, AppState.HOME_READY}:
             return
@@ -405,6 +521,7 @@ class AppController(QObject):
         self.ros.request_home(complete)
 
     @Slot()
+    @audited
     def enableTracking(self) -> None:
         if self._state not in {AppState.HOME_READY, AppState.READY}:
             return
@@ -421,6 +538,7 @@ class AppController(QObject):
         self.ros.set_tracking(True, complete)
 
     @Slot()
+    @audited
     def stopMotion(self) -> None:
         if self._state in {AppState.IDLE, AppState.PREFLIGHT, AppState.SHUTTING_DOWN}:
             return
@@ -463,6 +581,7 @@ class AppController(QObject):
                 "Motion stop was requested, but controller restoration was not confirmed.")
 
     @Slot()
+    @audited
     def stopAll(self) -> None:
         if self._state == AppState.SHUTTING_DOWN:
             return
@@ -501,6 +620,7 @@ class AppController(QObject):
             threading.Thread(target=self._finish_shutdown, daemon=True).start()
 
     @Slot()
+    @audited
     def forceStopAfterEstop(self) -> None:
         """Operator attests that the physical E-stop has made termination safe."""
         self._set_state(AppState.SHUTTING_DOWN, "Physical E-stop confirmed; stopping processes…")
@@ -511,29 +631,207 @@ class AppController(QObject):
             return
         threading.Thread(target=self._finish_shutdown, daemon=True).start()
 
+    def _stop_all_processes(self) -> bool:
+        # Host first, so the recorders receive Ctrl+C and finalize their files
+        # while the camera is still publishing.
+        stopped = True
+        for name in ["host", *[n for n in self._run_processes() if n not in {"host", "yolo"}], "yolo"]:
+            if self.processes.is_running(name):
+                stopped = self.processes.stop(name) and stopped
+        try:
+            if docker_control.stop():
+                self._log("yolo", "warning", "isaac_yolo was still running after its unit stopped; stopped it")
+        except docker_control.DockerException as exc:
+            self._log("yolo", "error", f"Could not verify the YOLO container: {exc}")
+            stopped = False
+        return stopped
+
     def _finish_shutdown(self) -> None:
-        self.processes.stop_all()
-        self._set_state(AppState.IDLE, "All managed processes stopped.")
+        if self._stop_all_processes():
+            self._set_state(AppState.IDLE, "All managed processes stopped.")
+        else:
+            self._set_state(AppState.FAULT, "Some processes did not stop; see System logs.")
         if self._shutting_down_for_quit:
-            self.ros.stop()
-            self.quitReady.emit()
+            self._quit()
+
+    def _quit(self) -> None:
+        self.ros.stop()
+        self.processes.close()
+        self.session.close()
+        self.quitReady.emit()
 
     @Slot()
+    @audited
     def requestQuit(self) -> None:
         if self._is_remote():
             # Closing the dashboard intentionally does not alter the Jetson run.
             self.remote.disconnect(release=True)
-            self.ros.stop()
-            self.quitReady.emit()
+            self._quit()
             return
-        if self.processes.running():
+        if self._run_processes():
             self._shutting_down_for_quit = True
             self.stopAll()
         else:
-            self.ros.stop()
-            self.quitReady.emit()
+            self._quit()
+
+    # ------------------------------------------------------------ setup & builds
+    def _set_message(self, message: str) -> None:
+        self._message = message
+        self.messageChanged.emit()
 
     @Slot()
+    @audited
+    def refreshSetup(self) -> None:
+        self._refresh_setup()
+
+    def _refresh_setup(self) -> None:
+        if self._checking_setup:
+            return
+        self._checking_setup = True
+        self.setupChanged.emit()
+
+        def work():
+            statuses = jobs.check_all(self.project_root)
+            self._setup = {job.id: jobs.describe(job, statuses[job.id]) for job in jobs.JOBS}
+            self._checking_setup = False
+            self.session.event("setup", "setup", "info", "Setup status checked",
+                               {job_id: status.state for job_id, status in statuses.items()})
+            self.setupChanged.emit()
+            if self._job_queue and not self._current_job:
+                self._jobQueueReady.emit()
+        threading.Thread(target=work, daemon=True).start()
+
+    def _start_job(self, job_id: str, title: str, command: list[str],
+                   stop_timeout_s: float = 30.0) -> bool:
+        if self.runActive:
+            self._set_message("Stop the active run before running setup jobs.")
+            return False
+        if self._current_job:
+            self._set_message(f"'{self._current_job}' is still running.")
+            return False
+        env = runtime_environment()
+        env["BUILDKIT_PROGRESS"] = "plain"
+        try:
+            self.processes.start(f"job-{job_id}", command, self.project_root, env, stop_timeout_s)
+        except Exception as exc:
+            self._log("setup", "error", f"{title}: {exc}")
+            self._set_message(f"{title} could not start: {exc}")
+            return False
+        self._current_job = job_id
+        self.terminals.model(f"job-{job_id}")
+        self._set_message(f"{title} running… (output below and in Logs)")
+        self.setupChanged.emit()
+        return True
+
+    @Slot(str)
+    @audited
+    def runJob(self, job_id: str) -> None:
+        job = jobs.JOBS_BY_ID.get(job_id)
+        if job is None:
+            return
+        self._job_queue = []
+        self._start_job(job.id, job.title, job.command(self.project_root), job.stop_timeout_s)
+
+    @Slot()
+    @audited
+    def updateAll(self) -> None:
+        """Run every job whose status is not OK, in dependency order."""
+        if self._current_job or self.runActive:
+            self._set_message("Wait for the active run or job to finish first.")
+            return
+        if not any(self._needs_run(job.id) for job in jobs.JOBS if job.in_update_all):
+            self._set_message("Everything is up to date (run 'Check again' to re-scan).")
+            return
+        # Every step stays queued in dependency order; each one is re-checked
+        # right before it would run, because earlier steps can make later ones
+        # stale (e.g. syncing sources makes the container build outdated).
+        self._job_queue = [job.id for job in jobs.JOBS if job.in_update_all]
+        self.session.event("setup", "setup", "info", "Update started", {"steps": self._job_queue})
+        self._start_next_job()
+
+    def _needs_run(self, job_id: str) -> bool:
+        return self._setup.get(job_id, {}).get("state") in {jobs.STALE, jobs.MISSING}
+
+    def _start_next_job(self) -> None:
+        while self._job_queue:
+            job = jobs.JOBS_BY_ID[self._job_queue.pop(0)]
+            if not self._needs_run(job.id):
+                continue
+            if self._start_job(job.id, job.title, job.command(self.project_root), job.stop_timeout_s):
+                self.setupChanged.emit()
+                return
+            self._job_queue = []
+        self.setupChanged.emit()
+
+    def _job_finished(self, job_id: str, code: int) -> None:
+        title = jobs.JOBS_BY_ID[job_id].title if job_id in jobs.JOBS_BY_ID else job_id
+        self._current_job = ""
+        if code == 0:
+            self._set_message(f"{title} finished successfully.")
+        else:
+            if self._job_queue:
+                self.session.event("setup", "setup", "error", "Update stopped",
+                                   {"failed": job_id, "skipped": self._job_queue})
+            self._job_queue = []
+            self._set_message(f"{title} failed (exit code {code}). See its output below.")
+        # Re-check before the next queued job: later jobs depend on earlier ones.
+        self.setupChanged.emit()
+        self._refresh_setup()
+
+    @Slot()
+    @audited
+    def cancelJob(self) -> None:
+        if not self._current_job:
+            return
+        self._job_queue = []
+        name = f"job-{self._current_job}"
+        threading.Thread(target=lambda: self.processes.stop(name), daemon=True).start()
+
+    @Slot()
+    @audited
+    def saveProjectImage(self) -> None:
+        versioned, latest = jobs.project_image_tags(self.project_root)
+        directory = self.project_root / "images"
+        directory.mkdir(exist_ok=True)
+        target = directory / f"{versioned.replace('/', '_').replace(':', '_')}.tar.gz"
+        part = shlex.quote(f"{target}.part")
+        final = shlex.quote(str(target))
+        script = (f"set -euo pipefail; docker save {versioned} {latest} | gzip -1 > {part}"
+                  f" && mv {part} {final} && ls -lh {final}")
+        self._job_queue = []
+        self._start_job("image_save", "Save project image", ["bash", "-c", script], 120.0)
+
+    @Slot(str)
+    @audited
+    def loadProjectImage(self, file_name: str) -> None:
+        path = self.project_root / "images" / Path(file_name).name
+        if not path.is_file():
+            self._set_message(f"{path} not found.")
+            return
+        self._job_queue = []
+        self._start_job("image_load", "Load project image",
+                        ["docker", "load", "-i", str(path)], 120.0)
+
+    @Slot(str, str)
+    def uiEvent(self, action: str, detail: str) -> None:
+        """Operator interactions handled purely in QML (navigation, dialogs)."""
+        self.session.event("action", "operator", "info", action,
+                           {"detail": detail} if detail else None)
+
+    @Slot()
+    @audited
+    def openSessionFolder(self) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.session.directory)))
+
+    @Slot(str)
+    @audited
+    def openProcessLog(self, name: str) -> None:
+        path = self.processes.log_path(name)
+        if path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    @Slot()
+    @audited
     def refreshRecordings(self) -> None:
         if self._is_remote():
             self._remote_call("list_recordings", {}, lambda ok, result:
@@ -550,6 +848,7 @@ class AppController(QObject):
         }))
 
     @Slot()
+    @audited
     def syncNow(self) -> None:
         if self._is_remote():
             self._message = "Drive sync runs locally on the Jetson; use its configured timer."
@@ -562,6 +861,7 @@ class AppController(QObject):
         threading.Thread(target=work, daemon=True).start()
 
     @Slot(str)
+    @audited
     def openPath(self, path: str) -> None:
         if self._is_remote():
             destination = self.project_root / "remote_downloads"

@@ -67,6 +67,6 @@ def test_old_local_mobilenet_defaults_are_migrated(tmp_path):
         }],
     }))
     profile = ProfileStore(path).load()["Old local"]
-    assert profile.mobilenetv2_engine_path.endswith("drone_fp32_t2000.engine")
-    assert profile.mobilenetv2_venv_python == "/usr/bin/python3"
+    assert profile.mobilenetv2_engine_path == "auto"
+    assert profile.mobilenetv2_venv_python == "auto"
 

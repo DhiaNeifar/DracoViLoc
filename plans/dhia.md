@@ -59,7 +59,7 @@ identical names, so the second launch gets: no ODAS (no sound points in RViz),
 terminals. Before launching, confirm nothing is still running:
 
 ```bash
-ps aux | grep -E "odas_core|arm_audio_demo" | grep -v grep   # must print nothing
+ps aux | grep -E "odas_core|arm_demo" | grep -v grep   # must print nothing
 docker ps                                                    # no isaac containers
 ```
 
@@ -178,7 +178,7 @@ export CUDA_MODULE_LOADING=LAZY
 export ROS_DOMAIN_ID=42
 export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
 
-ros2 launch dracoviloc_bringup arm_audio_demo.launch.py \
+ros2 launch dracoviloc_bringup arm_demo.launch.py \
   audio_enabled:=true \
   mobilenetv2_enabled:=true \
   mobilenetv2_engine_path:=$HOME/DracoViLoc/models/mobilenetv2/drone_fp32_t2000.engine \

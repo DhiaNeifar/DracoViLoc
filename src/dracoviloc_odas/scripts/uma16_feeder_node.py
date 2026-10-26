@@ -28,7 +28,7 @@ owns the socket forever and the other is stranded in the accept backlog.
 STARTUP
 -------
   1. ros2 launch odas_ros odas.launch.xml \
-         configuration_path:=$HOME/odas_ws/src/odas_ros/odas_ros/config/configuration.cfg \
+         configuration_path:=$HOME/DracoViLoc/src/odas_ros/config/configuration.cfg \
          audio_queue_size:=8 rviz:=true
      (this also spawns odas_core_node by itself - do not start odaslive)
   2. ros2 run --prefix 'python3' ... or simply:

@@ -1,8 +1,8 @@
 # dracoviloc_ekf
 
 C++ extended Kalman filter for DracoViLoc direction estimates. It optionally
-subscribes to `/yolo/direction`, `/ast/direction`, and `/gre/direction`; every
-input and the `/ekf/direction` output uses
+subscribes to `/yolo/direction` (`yolo_enabled`) and `/mobilenetv2/direction`
+(`mobilenetv2_ekf_enabled`); every input and the `/ekf/direction` output uses
 `geometry_msgs/Vector3Stamped` with `(x,y,z)` as a direction vector.
 
 `/ekf_fused_target_pose` is temporarily retained as a compatibility alias and
@@ -19,8 +19,10 @@ falls back to the common `measurement_noise`. The main bringup defaults to
 intermittent bearing. Sensor timestamps are kept monotonic when callbacks from
 the two pipelines arrive out of order.
 
-The EKF never subscribes to `/sst`. AST and GRE own the association between
-their classification result and the corresponding ODAS direction.
+The EKF never subscribes to `/sst`. MobileNetV2 owns the association between
+its classification result and the corresponding ODAS direction. AST and GRE
+still publish `/ast/direction` and `/gre/direction` for the direct tracking
+modes, but they are not EKF inputs.
 
 ## Bearing continuity gate
 

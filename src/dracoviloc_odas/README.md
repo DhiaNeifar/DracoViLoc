@@ -1,7 +1,7 @@
 # DracoViLoc ODAS and UMA16v2
 
-> For the full acoustic pipeline — AST/GRE classification and EKF fusion into
-> `/fused_target_pose`, which is what `arm_tracker` actually consumes —
+> For the full acoustic pipeline — MobileNetV2 classification and EKF fusion
+> into `/ekf/direction`, which is what `arm_tracker` consumes in EKF mode —
 > see [`docs/AUDIO_FUSION_INTEGRATION.md`](../../docs/AUDIO_FUSION_INTEGRATION.md).
 > This document covers only ODAS capture and localization on their own.
 
@@ -42,7 +42,7 @@ To inspect audio localization without moving the simulated arm:
 
 ```bash
 ros2 launch dracoviloc_bringup arm_demo.launch.py \
-  audio_enabled:=true audio_tracking_enabled:=false
+  audio_enabled:=true tracking_mode:=off
 ```
 
 ## Audio-only launch
@@ -54,7 +54,9 @@ ros2 launch dracoviloc_odas audio_bringup.launch.py \
 
 ODAS opens the UMA16v2 directly (`raw.interface = soundcard`) rather than
 through a filtering feeder, so `/sst`/`/ssl`/`/sss` are full-band — required
-by the AST classifier in `dracoviloc_audio_fusion`. The ODAS configuration
+by the MobileNetV2, AST and GRE classifiers. With `first_arrival_mode` set to
+`shadow` or `enforce`, `uma16_feeder` captures instead and forwards raw frames
+to ODAS over a socket. The ODAS configuration
 used at runtime is installed from `src/odas_ros/config/configuration.cfg`.
 
 ## Device busy
@@ -78,9 +80,10 @@ Repeat with a final `0` after testing to restore desktop audio.
 ## Important topics
 
 - `/ssl`, `/sst`, `/sss`: raw ODAS localization/tracking/separated-audio output.
-- `/audio_classifier/detection`: AST drone verdict per track (`dracoviloc_audio_fusion`).
-- `/fused_target_pose`: EKF-fused bearing (`dracoviloc_audio_fusion`).
-- `/arm_controller/joint_trajectory`: joint-1/joint-4 servo commands.
+- `/mobilenetv2/direction`, `/ast/direction`, `/gre/direction`: bearing of an
+  ODAS track that the classifier judged to be a drone.
+- `/ekf/direction`: fused bearing (`dracoviloc_ekf`).
+- `/arm_tracking_controller/commands`: joint-1/joint-4 servo commands.
 
 The UMA16v2 estimates direction, not range. Marker length and target distance
 are visualization conventions.

@@ -2,8 +2,8 @@
 Type=Application
 Name=DracoViLoc Control Center
 Comment=Operate and monitor the DracoViLoc robot system
-Exec=/home/hachem/DracoViLoc/scripts/run_gui.sh
-Icon=/home/hachem/DracoViLoc/gui/assets/dracoviloc-logo.png
+Exec=@PROJECT_ROOT@/scripts/run_gui.sh
+Icon=@PROJECT_ROOT@/gui/assets/dracoviloc-logo.png
 Terminal=false
 Categories=Science;Robotics;
 StartupNotify=true

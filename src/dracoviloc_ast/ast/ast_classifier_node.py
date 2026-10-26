@@ -61,7 +61,7 @@ MODEL INTERFACE (model/config.json + preprocessor_config.json)
 USAGE
 -----
     source /opt/ros/humble/setup.bash
-    source ~/odas_ws/install/setup.bash
+    source ~/DracoViLoc/install/setup.bash
     source ~/trt_env/bin/activate            # venv AFTER ros
     python3 ast_classifier_node.py --project-dir ~/drone \\
                                    --engine ~/drone/drone_ast.engine

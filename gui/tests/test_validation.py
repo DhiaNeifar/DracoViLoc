@@ -29,7 +29,7 @@ def test_ekf_requires_fusion_and_source():
         mobilenetv2_ekf_enabled=False, fusion_enabled=False,
         tracking_mode="ekf"))
     assert "EKF tracking requires fusion." in errors
-    assert "EKF tracking requires audio or YOLO." in errors
+    assert "EKF tracking requires YOLO or MobileNetV2 EKF input." in errors
 
 
 def test_mobile_ekf_dependency_chain():
@@ -56,11 +56,10 @@ def test_dual_cobot_profile_requires_distinct_valid_addresses():
 
 
 def test_dual_cobot_coordination_values_are_validated():
-    profile = RunProfile(dual_arm=True, target_nominal_distance=-1,
+    profile = RunProfile(dual_arm=True,
                          lead_lock_tolerance_rad=0,
                          dual_tracking_policy="unknown")
     errors = validate_profile(profile)
-    assert "Target nominal distance cannot be negative." in errors
     assert "Lead lock tolerance must be positive." in errors
     assert any("Dual tracking policy" in error for error in errors)
 

@@ -4,6 +4,8 @@ import os
 import shlex
 from pathlib import Path
 
+from .host_platform import resolve_yolo_image
+from .jobs import container_user_args
 from .models import RunProfile
 
 
@@ -37,7 +39,6 @@ def host_launch_arguments(profile: RunProfile) -> list[str]:
         "second_arm_x": profile.second_arm_x,
         "second_arm_y": profile.second_arm_y,
         "second_arm_z": profile.second_arm_z,
-        "target_nominal_distance": profile.target_nominal_distance,
         "dual_tracking_policy": profile.dual_tracking_policy,
         "lead_lock_tolerance_rad": profile.lead_lock_tolerance_rad,
         "audio_enabled": profile.audio_enabled,
@@ -113,11 +114,11 @@ def yolo_docker_command(project_root: Path, profile: RunProfile) -> list[str]:
     return [
         "docker", "run", "--rm", "--privileged", "--network", "host",
         "--ipc", "host", "--runtime", "nvidia",
-        "--name", "isaac_yolo",
+        "--name", "isaac_yolo", *container_user_args(),
         "-e", "ROS_DOMAIN_ID=42", "-e", "FASTDDS_BUILTIN_TRANSPORTS=UDPv4",
         "-e", "CUDA_MODULE_LOADING=LAZY",
         "-v", f"{Path.home() / 'workspaces/isaac_ros-dev'}:/workspaces/isaac_ros-dev",
         "--workdir", "/workspaces/isaac_ros-dev",
-        "isaac_ros_yolo:draco-t2000", "/bin/bash", "-lc", inner,
+        resolve_yolo_image(profile.yolo_image), "/bin/bash", "-lc", inner,
     ]
 

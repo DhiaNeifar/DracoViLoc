@@ -3,7 +3,8 @@ from datetime import datetime
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, OpaqueFunction
+from launch.actions import (
+    DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, LogInfo, OpaqueFunction)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -47,6 +48,17 @@ def _configure_pipeline(context):
             "mobilenetv2_ekf_enabled requires mobilenetv2_enabled:=true "
             "and fusion_enabled:=true")
 
+    # The raw camera stream is always recorded (and later synced to Drive)
+    # whenever the camera runs; it cannot be switched off.
+    forced_recording = yolo_enabled and not recording_enabled
+    if yolo_enabled:
+        recording_enabled = True
+        video_topic = context.launch_configurations.get("recording_video_topic", "/image")
+        if video_topic != "/image":
+            raise RuntimeError(
+                "recording_video_topic must be the raw camera topic /image "
+                f"(got {video_topic}); overlay images are never recorded")
+
     if recording_enabled and not (audio_enabled or yolo_enabled):
         raise RuntimeError(
             "recording_enabled=true requires audio_enabled or yolo_enabled")
@@ -72,12 +84,16 @@ def _configure_pipeline(context):
         source = "gre"
         if not fusion_enabled:
             raise RuntimeError("tracking_mode=ekf requires fusion_enabled:=true")
-        if not (audio_enabled or yolo_enabled):
-            raise RuntimeError("tracking_mode=ekf requires audio_enabled or yolo_enabled")
+        if not (yolo_enabled or mobilenetv2_ekf_enabled):
+            raise RuntimeError(
+                "tracking_mode=ekf requires yolo_enabled or mobilenetv2_ekf_enabled")
     else:
         source = "gre"
 
     actions = []
+    if forced_recording:
+        actions.append(LogInfo(msg=(
+            "recording_enabled forced to true: the raw camera stream is always recorded")))
     if audio_enabled:
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
@@ -86,6 +102,7 @@ def _configure_pipeline(context):
             launch_arguments={
                 "use_sim_time": "false",
                 "microphone_frame": "table_mic_link",
+                "uma16_card": LaunchConfiguration("uma16_card"),
                 "diagnostics_log_path": LaunchConfiguration("odas_diagnostics_log_path"),
                 "diagnostics_interval_s": LaunchConfiguration("odas_diagnostics_interval_s"),
                 "first_arrival_mode": LaunchConfiguration("first_arrival_mode"),
@@ -206,8 +223,6 @@ def _configure_pipeline(context):
         actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(get_package_share_directory("dracoviloc_ekf"), "launch", "ekf.launch.py")),
             launch_arguments={"yolo_enabled": "true" if yolo_enabled else "false",
-                              "ast_enabled": "true" if ast_enabled and audio_enabled else "false",
-                              "gre_enabled": "true" if gre_enabled and audio_enabled else "false",
                               "mobilenetv2_ekf_enabled": "true" if mobilenetv2_ekf_enabled else "false",
                               "process_noise": LaunchConfiguration("ekf_process_noise"),
                               "measurement_noise": LaunchConfiguration(
@@ -298,14 +313,6 @@ def _configure_pipeline(context):
                     LaunchConfiguration("home_duration_s"), value_type=float),
                 "dual_arm": ParameterValue(
                     LaunchConfiguration("dual_arm"), value_type=bool),
-                "second_arm_x": ParameterValue(
-                    LaunchConfiguration("second_arm_x"), value_type=float),
-                "second_arm_y": ParameterValue(
-                    LaunchConfiguration("second_arm_y"), value_type=float),
-                "second_arm_z": ParameterValue(
-                    LaunchConfiguration("second_arm_z"), value_type=float),
-                "target_nominal_distance": ParameterValue(
-                    LaunchConfiguration("target_nominal_distance"), value_type=float),
                 "dual_tracking_policy": LaunchConfiguration("dual_tracking_policy"),
                 "lead_lock_tolerance_rad": ParameterValue(
                     LaunchConfiguration("lead_lock_tolerance_rad"), value_type=float),
@@ -365,8 +372,6 @@ def generate_launch_description():
                               description="Arm 2 separation distance along Y axis in metres."),
         DeclareLaunchArgument("second_arm_z", default_value="0.0",
                               description="Arm 2 separation distance along Z axis in metres."),
-        DeclareLaunchArgument("target_nominal_distance", default_value="0.0",
-                              description="Nominal target distance in metres for binocular gaze convergence (0.0 for parallel gaze in same direction)."),
         DeclareLaunchArgument("dual_tracking_policy", default_value="first_arm_lead",
                               choices=["first_arm_lead", "simultaneous"],
                               description="Dual-arm co-tracking policy."),
@@ -526,6 +531,9 @@ def generate_launch_description():
             "bearing_gate_challenger_tolerance_deg", default_value="15.0"),
         DeclareLaunchArgument("bearing_gate_reacquire_timeout_s", default_value="10.0"),
         DeclareLaunchArgument(
+            "uma16_card", default_value="auto",
+            description="ALSA card index of the UMA16v2, or 'auto' to detect it."),
+        DeclareLaunchArgument(
             "first_arrival_mode", default_value="off",
             description="First-arrival gating: off, shadow, or enforce."),
         DeclareLaunchArgument("first_arrival_min_confidence", default_value="0.70"),
@@ -569,7 +577,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "diagnostics_ee_frame", default_value="wrist3_link",
             description="TF frame treated as the end effector "
-                        "(wrist3_link, d435i_link, or odas_link)."),
+                        "(wrist3_link, micarray_camera_link, or odas_link)."),
         DeclareLaunchArgument(
             "diagnostics_smoothing_alpha", default_value="0.3",
             description="Exponential smoothing on the end-effector "

@@ -21,6 +21,60 @@ the current user. The desktop file is intentionally specific to this
 workstation. Continue to use `scripts/stop_dracoviloc.sh` as the command-line
 recovery path.
 
+## Processes and logging
+
+Local runs start every subsystem as a transient systemd user unit
+(`dracoviloc-host.service`, `dracoviloc-yolo.service`, ...) over D-Bus.
+systemd supervises each one: it keeps running if the window closes or
+crashes, the GUI reattaches to it on restart, and stopping sends Ctrl+C
+(SIGINT) with a SIGKILL fallback after the stop timeout. Inspect them with
+`systemctl --user list-units 'dracoviloc-*'`.
+
+Each session writes to `runs/logs/<YYYY-MM-DD_HH-MM-SS>/`:
+
+| File | Contents |
+|---|---|
+| `session.json` | machine, user, git commit/branch/dirty, GUI version, start and end time |
+| `events.jsonl` | every operator action (button, setting change with old/new value, navigation, dialog), state change, message, process start/stop/exit, warning and error |
+| `processes/<name>_<time>.log` | the full terminal output of each process, line by line with timestamps (ANSI colors preserved) |
+| `processes/<name>_<time>.status.json` | command, PIDs, start/stop/end time, exit code or signal |
+| `runs/run_<time>.json` | the profile and exact commands of each run |
+
+Actions, state changes and errors are written to disk (fsync) as they happen.
+The Logs page shows the events and one live terminal per process; logs stay
+on the machine and are not synced to Drive.
+
+Whenever the camera (YOLO) is enabled, the raw `/image` stream is always
+recorded to `runs/video/<time>/camera.mp4`; this cannot be switched off, and
+overlay images are never recorded. Preflight warns when this machine cannot
+upload recordings to Google Drive (see `docs/DRIVE_SYNC.md`).
+
+## Setup & builds
+
+The **Setup & builds** page checks each component of this machine and runs
+the script that fixes it, with its live terminal output (also in Logs):
+
+| Card | Status check | Action |
+|---|---|---|
+| Repository | branch, commit, local changes, commits behind the last fetch | `git pull --ff-only` (disabled with local changes) |
+| FAIRINO SDK | `libfairino.so` present and built for this CPU (read from its ELF header) | `scripts/build_fairino_sdk.sh` |
+| DracoViLoc workspace | sources newer than each package's last successful colcon build | `colcon build --symlink-install --base-paths src` |
+| Project Docker image | `dracoviloc/isaac_ros:<arch>-<hash>` exists; the hash covers `isaac_ros/docker/` | `docker build` on the Isaac ROS dev image for this CPU |
+| Isaac ROS workspace sources | `deploy_isaac_ros.sh --dry-run` lists files that differ | `scripts/deploy_isaac_ros.sh` |
+| Isaac ROS build | YOLO package sources newer than their container build | `build_dracoviloc_yolo.sh` in a one-off project container |
+
+**Bring this machine up to date** walks these steps in order, re-checking
+each one just before it would run, and stops at the first failure. After a
+`git pull` on either machine it is the only button needed. Jobs and runs
+are mutually exclusive.
+
+The project image bakes in every runtime dependency, so container builds
+never install packages. **Save image** writes a compressed copy to
+`images/` (git-ignored); copy it to the same folder on another machine with
+the same CPU type and **Load** it there. YOLO runs and builds use the
+project image when it exists, and run as the host user so files in the
+Isaac workspace keep your ownership.
+
 ## Remote Jetson control
 
 1. Configure a key-based SSH host alias named `jetson` (or enter another alias

@@ -22,9 +22,9 @@
   <link name="world"/>
 
   <!-- Mount offsets for sensors on wrist3 -->
-  <xacro:property name="d435i_mount_x" value="0.0"/>
-  <xacro:property name="d435i_mount_y" value="0.0"/>
-  <xacro:property name="d435i_mount_z" value="0.1"/>
+  <xacro:property name="micarray_camera_mount_x" value="0.0"/>
+  <xacro:property name="micarray_camera_mount_y" value="0.0"/>
+  <xacro:property name="micarray_camera_mount_z" value="0.1"/>
   <xacro:property name="odas_mount_x" value="0.0"/>
   <xacro:property name="odas_mount_y" value="0.0"/>
   <xacro:property name="odas_mount_z" value="0.13"/>
@@ -38,7 +38,7 @@
 
     <xacro:fairino3_v6_robot_prefixed prefix=""/>
 
-    <link name="d435i_link">
+    <link name="micarray_camera_link">
       <visual>
         <geometry><box size="0.025 0.09 0.025"/></geometry>
         <material name="camera_grey"><color rgba="0.25 0.25 0.25 1.0"/></material>
@@ -50,10 +50,10 @@
                  iyy="0.000010" iyz="0" izz="0.000073"/>
       </inertial>
     </link>
-    <joint name="wrist3_to_d435i" type="fixed">
+    <joint name="wrist3_to_micarray_camera" type="fixed">
       <parent link="wrist3_link"/>
-      <child link="d435i_link"/>
-      <origin xyz="${d435i_mount_x} ${d435i_mount_y} ${d435i_mount_z}" rpy="0 0 0"/>
+      <child link="micarray_camera_link"/>
+      <origin xyz="${micarray_camera_mount_x} ${micarray_camera_mount_y} ${micarray_camera_mount_z}" rpy="0 0 0"/>
     </joint>
 
     <link name="odas_link">
@@ -120,8 +120,8 @@
 
     <xacro:fairino3_v6_robot_prefixed prefix="left_"/>
 
-    <!-- Primary arm mounts sensors (D435i camera + ODAS microphone array) -->
-    <link name="d435i_link">
+    <!-- Primary arm mounts sensors (mic-array camera + ODAS microphone array) -->
+    <link name="micarray_camera_link">
       <visual>
         <geometry><box size="0.025 0.09 0.025"/></geometry>
         <material name="camera_grey"><color rgba="0.25 0.25 0.25 1.0"/></material>
@@ -133,10 +133,10 @@
                  iyy="0.000010" iyz="0" izz="0.000073"/>
       </inertial>
     </link>
-    <joint name="left_wrist3_to_d435i" type="fixed">
+    <joint name="left_wrist3_to_micarray_camera" type="fixed">
       <parent link="left_wrist3_link"/>
-      <child link="d435i_link"/>
-      <origin xyz="${d435i_mount_x} ${d435i_mount_y} ${d435i_mount_z}" rpy="0 0 0"/>
+      <child link="micarray_camera_link"/>
+      <origin xyz="${micarray_camera_mount_x} ${micarray_camera_mount_y} ${micarray_camera_mount_z}" rpy="0 0 0"/>
     </joint>
 
     <link name="odas_link">

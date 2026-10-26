@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import AgentConfig
+from .host_platform import AUTO, resolve_mobilenet_runtime, resolve_yolo_image
 
 
 class AgentRuntime:
@@ -313,12 +314,13 @@ class AgentRuntime:
         check("docker", "Docker", docker.returncode == 0, docker.stdout.strip() or docker.stderr.strip(),
               profile.get("yolo_enabled", False))
         if profile.get("yolo_enabled"):
+            yolo_image = resolve_yolo_image(self.config.yolo_image)
             image = self._run([
-                "docker", "image", "inspect", self.config.yolo_image,
+                "docker", "image", "inspect", yolo_image or "<none>",
                 "--format", "{{.Id}}"], 4.0)
-            check("yolo_image", "Jetson Isaac ROS image", image.returncode == 0,
-                  self.config.yolo_image if image.returncode == 0 else
-                  (image.stderr.strip() or f"Missing: {self.config.yolo_image}"))
+            check("yolo_image", "Isaac ROS image", image.returncode == 0,
+                  yolo_image if image.returncode == 0 else
+                  f"Missing: {yolo_image or 'no known image for this CPU architecture'}")
         free = shutil.disk_usage(Path(self.config.recordings_root).parent).free
         check("disk", "Recording disk", free >= 2 * 1024 ** 3, f"{free / 1024**3:.1f} GiB free",
               profile.get("recording_enabled", False))
@@ -326,9 +328,13 @@ class AgentRuntime:
               "None" if not self.run_active() else "A run is already active")
         engine_checks = []
         if profile.get("mobilenetv2_enabled"):
-            engine_checks.append((
-                "mobilenetv2_engine", "MobileNetV2 TensorRT engine",
-                root / "models/mobilenetv2/drone_fp32.engine", root / "trt_env/bin/python3"))
+            selected = resolve_mobilenet_runtime(root)
+            if "error" in selected:
+                check("mobilenetv2_engine", "MobileNetV2 TensorRT engine", False, selected["error"])
+            else:
+                engine_checks.append((
+                    "mobilenetv2_engine", "MobileNetV2 TensorRT engine",
+                    Path(selected["engine"]), Path(selected["python"])))
         if profile.get("ast_enabled"):
             engine_checks.append((
                 "ast_engine", "AST TensorRT engine",
@@ -384,10 +390,9 @@ class AgentRuntime:
         # Remote mode is dashboard-only, and recordings must stay on the Jetson.
         values["use_rviz"] = False
         values["recording_root"] = self.config.recordings_root
-        values["mobilenetv2_engine_path"] = str(
-            Path(self.config.project_root) / "models/mobilenetv2/drone_fp32.engine")
-        values["mobilenetv2_venv_python"] = str(
-            Path(self.config.project_root) / "trt_env/bin/python3")
+        # The engine must match the agent machine's GPU, not the GUI's.
+        values["mobilenetv2_engine_path"] = AUTO
+        values["mobilenetv2_venv_python"] = AUTO
         def render(value):
             if isinstance(value, bool):
                 return "true" if value else "false"
@@ -430,7 +435,7 @@ class AgentRuntime:
             ])
             shell = ("source /opt/ros/humble/setup.bash; "
                      "source /workspaces/isaac_ros-dev/install/setup.bash; exec " + inner)
-            yolo += [self.config.yolo_image, "/bin/bash", "-lc", shell]
+            yolo += [resolve_yolo_image(self.config.yolo_image), "/bin/bash", "-lc", shell]
             result = self._run(yolo, 20.0)
             if result.returncode != 0:
                 return False, result.stderr.strip() or "YOLO container failed"

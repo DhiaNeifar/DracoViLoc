@@ -249,7 +249,8 @@ robot_command_thread::robot_command_thread(const std::string node_name, const st
 robot_command_thread::~robot_command_thread()
 {
     //_ptr_robot->CloseRPC();
-    _ptr_robot->~FRRobot();
+    // unique_ptr owns the SDK object; calling ~FRRobot() here destroyed it twice.
+    _ptr_robot.reset();
 }
 
 

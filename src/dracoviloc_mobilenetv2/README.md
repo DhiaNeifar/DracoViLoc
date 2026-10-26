@@ -15,12 +15,19 @@ state. No direction is emitted for an inactive slot, including when
 
 ## Runtime and models
 
-The laptop GUI selects `/usr/bin/python3` with
-`models/mobilenetv2/drone_fp32_t2000.engine`. Remote execution overrides both
-values and selects `~/DracoViLoc/trt_env/bin/python3` with the Jetson Orin
-engine. Both interpreters are verified with NumPy, SciPy, PyCUDA and TensorRT
-10.3 after sourcing ROS. This does not require PyTorch, Transformers, or
-sounddevice. Override `venv_python` if moving environments.
+`engine_path` and `venv_python` default to `auto`. At launch,
+`mobilenetv2/runtime_selection.py` reads this machine's GPU name and picks the
+engine listed for that GPU in `models/mobilenetv2/metadata.json`
+(`drone_fp32.engine` on the Jetson Orin, `drone_fp32_t2000.engine` on the
+Quadro T2000 laptop). It then picks the first interpreter that imports
+TensorRT and PyCUDA: the metadata's `python`, then `trt_env/bin/python3`, then
+`/usr/bin/python3`. The same checkout therefore runs unchanged on both
+machines. Pass explicit paths to override.
+
+For a new GPU, build an engine (below) and add an entry with its `gpu` name
+and `engine` file to a `runtimes` list in `metadata.json`. Without a matching
+engine the launch stops with an error rather than loading a wrong engine.
+This does not require PyTorch, Transformers, or sounddevice.
 
 Models live in the checkout's `models/mobilenetv2`. CMake records the source
 model path at build time; override `engine_path` after relocating the checkout,
@@ -63,7 +70,7 @@ Bringup exposes `mobilenetv2_threshold`, `mobilenetv2_votes_required`,
 `mobilenetv2_vote_window`, `mobilenetv2_engine_path`, and `mobilenetv2_venv_python`.
 `min_activity` and `always_classify` are shared with the existing launch.
 `direct_either` continues to mean AST/GRE only. Direct MobileNetV2 uses the
-existing servo limits, timeout, and joints 1/4. See the root `DracoViLoc.md`
+existing servo limits, timeout, and joints 1/4. See the root `instruction.md`
 for the complete host/container workflow.
 
 On this 8 GB Jetson, concurrent AST + MobileNetV2 + YOLO startup exceeded

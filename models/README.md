@@ -15,8 +15,8 @@ DracoViLoc. Runtime workspaces contain deployed copies only.
 
 - `drone_ast.engine`: generated TensorRT engine for the current Jetson.
 
-`classification_fusion.launch.py` reads both the feature-extractor files and
-the engine directly from this directory. No package-local copy is used.
+`arm_demo.launch.py` (via `dracoviloc_ast/ast.launch.py`) reads both the
+feature-extractor files and the engine directly from this directory. No package-local copy is used.
 
 ### `gre/`
 
@@ -25,13 +25,24 @@ the engine directly from this directory. No package-local copy is used.
 - `model_logmel_meta.json`: feature/model metadata.
 - `model_logmel.engine`: engine for the current Jetson.
 
-`classification_fusion.launch.py` reads the engine and metadata directly from
-this directory. No package-local copy is used.
+`arm_demo.launch.py` (via `dracoviloc_gre/gre.launch.py`) reads the engine and
+metadata directly from this directory. No package-local copy is used.
+
+### `mobilenetv2/`
+
+- `mobilenetv2_drone.onnx`: portable `waveform[1,16000] -> probabilities[1,2]` export.
+- `metadata.json`: sample rate, window and preprocessing contract.
+- `reference_outputs.npz`: reference outputs used by `validate_engine.py`.
+- `drone_fp32.engine`: TensorRT engine for the Jetson Orin.
+- `drone_fp32_t2000.engine`: TensorRT engine for the x86 Quadro T2000 host.
+
+Build engines with `scripts/build_mobilenetv2_engine.py`.
 
 ### `yolo/`
 
-- `drone_yolo11n_20260825_best.pt`: current checkpoint.
-- `drone_yolo11n_deployed_20260803.pt`: previous deployed checkpoint.
+- `drone_yolo11n_20260917_best.pt`: current checkpoint.
+- `drone_yolo11n_20260825_best.pt`: previous checkpoint.
+- `drone_yolo11n_deployed_20260803.pt`: older deployed checkpoint.
 - `drone_yolo11n_deployed_20260803.onnx`: previous matching ONNX.
 
 Copy the current checkpoint to the Isaac workspace, export a same-basename
