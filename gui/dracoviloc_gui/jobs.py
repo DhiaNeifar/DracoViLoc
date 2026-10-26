@@ -1,14 +1,14 @@
 """Setup & build jobs: what each one checks, and the command that fixes it.
 
-A job is a status check plus one command. The command is always a script or
-tool that also works from a terminal; the GUI runs it as a systemd unit
+A job is a status check plus one command. The command is always a script in
+scripts/ (or git), so every step also works from a terminal; the GUI runs it
+as a systemd unit
 (``dracoviloc-job-<id>.service``) so its full output is logged and shown live.
 Checks are cheap, read-only and never need the network.
 """
 from __future__ import annotations
 
 import os
-import shlex
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
@@ -17,11 +17,12 @@ from typing import Callable
 
 from . import docker_control
 from .host_platform import (
-    base_image_candidates, isaac_root, machine_name, project_image_tags,
-    project_image_version, resolve_yolo_image)
+    base_image_candidates, isaac_root, machine_name, project_image_tags)
 
 OK, STALE, MISSING, BLOCKED, UNKNOWN = "ok", "stale", "missing", "blocked", "unknown"
 ISAAC_PACKAGES = ("isaac_ros_yolo_bringup", "isaac_ros_yolo_direction", "yolo_video_publisher")
+# Isaac ROS packages (not ours) the detectors need; D-FINE runs on the RT-DETR nodes.
+UPSTREAM_ISAAC_PACKAGES = ("isaac_ros_yolov8", "isaac_ros_rtdetr")
 IGNORED_PARTS = {"__pycache__", ".pytest_cache", ".git"}
 ELF_MACHINES = {0x3E: "x86_64", 0xB7: "aarch64"}
 AUTO_MODEL = "auto"
@@ -44,6 +45,17 @@ class Job:
     command: Callable[[Path], list[str]]
     in_update_all: bool = True
     stop_timeout_s: float = 30.0
+    # Checkboxes shown on the job's card: name -> (label, default). Their values
+    # are passed to command() as keyword arguments.
+    options: dict[str, tuple[str, bool]] = field(default_factory=dict)
+
+    def option_values(self, saved: dict | None = None) -> dict[str, bool]:
+        saved = saved or {}
+        return {name: bool(saved.get(name, default)) for name, (_, default) in self.options.items()}
+
+
+def script(project_root: Path, name: str, *args: str) -> list[str]:
+    return [str(project_root / "scripts" / name), *args]
 
 
 def container_user_args() -> list[str]:
@@ -115,7 +127,7 @@ def check_fairino_sdk(project_root: Path) -> JobStatus:
 
 
 def build_fairino_sdk(project_root: Path) -> list[str]:
-    return [str(project_root / "scripts/build_fairino_sdk.sh")]
+    return script(project_root, "build_fairino_sdk.sh")
 
 
 # ------------------------------------------------------------- host workspace
@@ -134,13 +146,7 @@ def check_host_workspace(project_root: Path) -> JobStatus:
 
 
 def build_host_workspace(project_root: Path) -> list[str]:
-    script = (
-        "set -e; set +u; source /opt/ros/humble/setup.bash; set -u; "
-        f"cd {shlex.quote(str(project_root))}; "
-        # src/ only: isaac_ros/ is built inside the container, yolo-alt/ is not ours.
-        "colcon build --symlink-install --base-paths src "
-        "--event-handlers console_cohesion+ summary+")
-    return ["bash", "-c", script]
+    return script(project_root, "build_workspace.sh")
 
 
 # --------------------------------------------------------------- project image
@@ -166,14 +172,7 @@ def check_project_image(project_root: Path) -> JobStatus:
 
 
 def build_project_image(project_root: Path) -> list[str]:
-    versioned, latest = project_image_tags(project_root)
-    base = next((image for image in base_image_candidates()
-                 if docker_control.image_exists(image)), "")
-    return ["docker", "build", "--progress=plain",
-            "--build-arg", f"BASE_IMAGE={base}",
-            "--build-arg", f"DRACOVILOC_IMAGE_VERSION={project_image_version(project_root)}",
-            "-t", versioned, "-t", latest,
-            str(project_root / "isaac_ros/docker")]
+    return script(project_root, "build_project_image.sh")
 
 
 # ------------------------------------------------------- Isaac ROS workspace
@@ -206,33 +205,63 @@ def check_isaac_sync(project_root: Path) -> JobStatus:
     return JobStatus(OK, "Isaac workspace matches this repository")
 
 
-def sync_isaac(project_root: Path) -> list[str]:
-    return [str(project_root / "scripts/deploy_isaac_ros.sh"), str(isaac_root())]
-
-
 def check_isaac_build(project_root: Path) -> JobStatus:
     workspace = isaac_root()
-    if not (workspace / "src/isaac_ros_common").is_dir():
-        return JobStatus(BLOCKED, f"Isaac ROS workspace not found at {workspace}")
     packages = {name: workspace / "src" / name for name in ISAAC_PACKAGES
                 if (workspace / "src" / name).is_dir()}
     if len(packages) != len(ISAAC_PACKAGES):
-        return JobStatus(BLOCKED, "DracoViLoc packages are not in the Isaac workspace yet",
-                         ["Run 'Sync Isaac ROS workspace' first."])
+        return JobStatus(MISSING, "DracoViLoc packages are not in the Isaac workspace yet")
     stale = _stale_packages(packages, workspace / "build")
+    stale += [f"{name}: not built yet" for name in UPSTREAM_ISAAC_PACKAGES
+              if not (workspace / "install" / name).is_dir()]
     if stale:
         return JobStatus(STALE, f"{len(stale)} package(s) need a container build", stale)
-    return JobStatus(OK, "YOLO packages built in the container")
+    return JobStatus(OK, "YOLO and D-FINE packages built in the container")
 
 
-def build_isaac(project_root: Path) -> list[str]:
-    workspace = isaac_root()
-    return ["docker", "run", "--rm", "--network", "host", "--runtime", "nvidia",
-            "--name", "dracoviloc_isaac_build", *container_user_args(),
-            "-v", f"{workspace}:/workspaces/isaac_ros-dev",
-            "--workdir", "/workspaces/isaac_ros-dev",
-            resolve_yolo_image("auto"),
-            "/workspaces/isaac_ros-dev/scripts/build_dracoviloc_yolo.sh"]
+def check_isaac(project_root: Path) -> JobStatus:
+    """Sources synced into the Isaac workspace, then packages built there."""
+    synced = check_isaac_sync(project_root)
+    if synced.state != OK:
+        return synced
+    return check_isaac_build(project_root)
+
+
+def setup_isaac(project_root: Path) -> list[str]:
+    return script(project_root, "setup_isaac_ros.sh")
+
+
+# ------------------------------------------------------- YOLO models on Drive
+def check_yolo_fetch(project_root: Path) -> JobStatus:
+    """Offline: what has been fetched so far and what still needs an export.
+    Whether Drive has new models is only known by fetching."""
+    import json
+    from .yolo_models import FAMILIES, OK as ONNX_OK, list_all
+    manifest = {}
+    for folder, _, _ in FAMILIES.values():
+        try:
+            manifest.update(json.loads((project_root / "models" / folder / "drive_models.json").read_text()))
+        except (OSError, ValueError):
+            pass
+    unexported = [model.id for model in list_all(project_root, check_tensorrt=False, gpu="", image="")
+                  if model.has_checkpoint and not model.legacy and model.onnx_state != ONNX_OK]
+    fetched = sorted((entry.get("fetched_at") or "" for entry in manifest.values()), reverse=True)
+    details = [f"{run} -> {entry.get('model_id')}" for run, entry in sorted(manifest.items(), reverse=True)]
+    if unexported:
+        return JobStatus(STALE, f"{len(unexported)} checkpoint(s) not exported to ONNX yet",
+                         [f"Needs export: {model}" for model in unexported] + details)
+    if not manifest:
+        return JobStatus(MISSING, "Nothing fetched from Google Drive yet")
+    from datetime import datetime
+    try:
+        last = datetime.fromisoformat(fetched[0]).astimezone().strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        last = "unknown"
+    return JobStatus(OK, f"{len(manifest)} training run(s) fetched · last fetch {last}", details)
+
+
+def fetch_yolo_models(project_root: Path, export: bool = True) -> list[str]:
+    return script(project_root, "fetch_yolo_models.sh", "--gui", *([] if export else ["--no-export"]))
 
 
 # --------------------------------------------------------------- git update
@@ -292,21 +321,25 @@ def yolo_models_command(*args: str) -> list[str]:
 JOBS: tuple[Job, ...] = (
     Job("git", "Repository", "Fetch and fast-forward this checkout from GitHub.",
         "Pull latest", check_git, git_pull, in_update_all=False),
+    Job("yolo_fetch", "Visual models from Google Drive",
+        "Download newly trained YOLO and D-FINE checkpoints from the team Drive folder "
+        "(scripts/fetch_yolo_models.sh).",
+        "Fetch new models", check_yolo_fetch, fetch_yolo_models, in_update_all=False,
+        stop_timeout_s=60.0,
+        options={"export": ("Export new models to ONNX after fetching", True)}),
     Job("fairino_sdk", "FAIRINO SDK",
-        "Native libfairino for this CPU (not stored in git; each machine builds its own).",
+        "Native libfairino for this CPU, not stored in git (scripts/build_fairino_sdk.sh).",
         "Build SDK", check_fairino_sdk, build_fairino_sdk),
     Job("host_build", "DracoViLoc workspace",
-        "colcon build of src/ on the host.",
-        "Build workspace", check_host_workspace, build_host_workspace, stop_timeout_s=60.0),
+        "colcon build of src/ on the host (scripts/build_workspace.sh).",
+        "Build project", check_host_workspace, build_host_workspace, stop_timeout_s=60.0),
     Job("project_image", "Project Docker image",
-        "Isaac ROS image with every DracoViLoc dependency baked in (isaac_ros/docker).",
+        "Isaac ROS image with every DracoViLoc dependency baked in (scripts/build_project_image.sh).",
         "Build image", check_project_image, build_project_image, stop_timeout_s=60.0),
-    Job("isaac_sync", "Isaac ROS workspace sources",
-        "Copy isaac_ros/ packages, models and tools into the Isaac workspace.",
-        "Sync", check_isaac_sync, sync_isaac),
-    Job("isaac_build", "Isaac ROS build",
-        "colcon build of the YOLO packages inside the project container.",
-        "Build in container", check_isaac_build, build_isaac, stop_timeout_s=60.0),
+    Job("isaac", "Isaac ROS workspace & detector packages",
+        "Copy isaac_ros/ into the Isaac workspace, then colcon build the YOLO and D-FINE packages in the "
+        "project container (scripts/setup_isaac_ros.sh).",
+        "Set up & build", check_isaac, setup_isaac, stop_timeout_s=60.0),
     Job("yolo_model", "YOLO model for this GPU",
         "Export the newest checkpoint to ONNX (if needed) and build its TensorRT plan for this GPU.",
         "Prepare newest model", check_yolo_model, prepare_yolo_model, stop_timeout_s=60.0),
@@ -326,7 +359,9 @@ def check_all(project_root: Path) -> dict[str, JobStatus]:
 
 def describe(job: Job, status: JobStatus) -> dict:
     return {"id": job.id, "title": job.title, "description": job.description,
-            "action": job.action, "in_update_all": job.in_update_all, **asdict(status)}
+            "action": job.action, "in_update_all": job.in_update_all,
+            "options": [{"name": name, "label": label} for name, (label, _) in job.options.items()],
+            **asdict(status)}
 
 
 __all__ = ["JOBS", "JOBS_BY_ID", "Job", "JobStatus", "check_all", "container_user_args",

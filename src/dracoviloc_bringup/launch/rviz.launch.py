@@ -26,13 +26,18 @@ def _rviz(context):
                      .robot_description_kinematics(file_path="config/kinematics.yaml")
                      .joint_limits(file_path="config/joint_limits.yaml")
                      .planning_pipelines(pipelines=["ompl"]).to_moveit_configs())
+    config = (os.path.join(get_package_share_directory("dracoviloc_bringup"), "config", "embedded.rviz")
+              if LaunchConfiguration("embedded").perform(context).lower() == "true"
+              else os.path.join(moveit_share, "config", "moveit.rviz"))
     return [Node(package="rviz2", executable="rviz2", output="screen",
-                 arguments=["-d", os.path.join(moveit_share, "config", "moveit.rviz")],
+                 arguments=["-d", config],
                  parameters=[moveit_config.to_dict(), {"use_sim_time": False}])]
 
 
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("dual_arm", default_value="false"),
+        DeclareLaunchArgument("embedded", default_value="false",
+                              description="3D view only (no side panels), for the control center."),
         OpaqueFunction(function=_rviz),
     ])

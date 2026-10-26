@@ -22,6 +22,10 @@ def validate_profile(profile: RunProfile) -> list[str]:
         errors.append("Remote agent port must be between 1 and 65535.")
     if profile.hardware_mode not in {"mock", "real"}:
         errors.append("Hardware mode must be mock or real.")
+    if profile.visual_detector not in {"yolo", "dfine", "dfine_n"}:
+        errors.append("Visual detector must be yolo, dfine or dfine_n.")
+    if profile.execution_target == "remote" and profile.yolo_enabled and profile.visual_detector != "yolo":
+        errors.append("Remote runs support YOLO only; choose YOLO under Visual.")
     if profile.dual_tracking_policy not in {"first_arm_lead", "simultaneous"}:
         errors.append("Dual tracking policy must be first_arm_lead or simultaneous.")
     if profile.dual_arm:

@@ -1,0 +1,49 @@
+{
+  "2026_08_03_23_04_37_yolo11n_exp001": {
+    "drive_file_id": "1LeaxSqFwvLKc4XNbCHXHG_5Zpo0s0wu3",
+    "fetched_at": "2026-10-26T06:52:36+00:00",
+    "finished_at": "2026-10-24T15:47:06",
+    "metrics": {},
+    "model_id": "drone_yolo11n_deployed_20260803",
+    "sha256": "04b85cb4ed9ca64a0903ee41749c9081d50f805e561f97efd5374c940f3630f4"
+  },
+  "2026_08_25_23_47_46_yolo11n_drone": {
+    "drive_file_id": "1jlkn2ID9ecU0tQvLm6Jn_fg8r6jKTkq_",
+    "fetched_at": "2026-10-26T06:52:40+00:00",
+    "finished_at": "2026-10-24T15:47:06",
+    "metrics": {
+      "epoch": 56,
+      "epochs_trained": 60,
+      "val_map50": 0.9785,
+      "val_map50_95": 0.6894
+    },
+    "model_id": "drone_yolo11n_20260825_best",
+    "sha256": "556cb4be285474d82674597cb1cd669caa68d6d71946f99e80694527c8955ae7"
+  },
+  "2026_09_17_19_13_36_yolo11n_drone": {
+    "drive_file_id": "14dM1eVDgbW26jH4Hr3qMtMRy5y962xrk",
+    "fetched_at": "2026-10-26T06:52:47+00:00",
+    "finished_at": "2026-10-24T15:47:06",
+    "metrics": {
+      "epoch": 33,
+      "epochs_trained": 37,
+      "val_map50": 0.9723,
+      "val_map50_95": 0.6675
+    },
+    "model_id": "drone_yolo11n_20260917_best",
+    "sha256": "eec45541e4e9908f121d6049f89cefe831404d7d1431eae8dc56a82277c3aaae"
+  },
+  "2026_10_24_03_31_54_yolo11n_par": {
+    "drive_file_id": "1PH8KRdtTx-L17_j7IYnGXZXBT5huBzY0",
+    "fetched_at": "2026-10-26T06:52:52+00:00",
+    "finished_at": "2026-10-24T15:47:07",
+    "metrics": {
+      "epoch": 26,
+      "epochs_trained": 41,
+      "val_map50": 0.9714,
+      "val_map50_95": 0.6589
+    },
+    "model_id": "par_yolo11n_20261024_best",
+    "sha256": "24988258d1a19daecdf0e6e64c381c75e4efada4f865044e9bcf14ef4648ddb3"
+  }
+}

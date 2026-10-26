@@ -1,0 +1,39 @@
+{
+  "source": "full_dfine_n_20261025_best.pth",
+  "source_sha256": "efedfd278b45bc709c0653b605dc947c29e63ace84b7d3cee96fbb6136878c40",
+  "onnx_sha256": "e69a10f9869ccabbcee3eba131b7ab619d2fe30abb010b73a3ac628bea716ed3",
+  "exported_at": "2026-10-26T07:41:48+00:00",
+  "family": "dfine",
+  "size": "n",
+  "num_classes": 1,
+  "imgsz": 640,
+  "torch": "2.5.1",
+  "onnx": "1.23.2",
+  "inputs": {
+    "images": [
+      1,
+      3,
+      640,
+      640
+    ],
+    "orig_target_sizes": [
+      1,
+      2
+    ]
+  },
+  "outputs": {
+    "labels": [
+      1,
+      300
+    ],
+    "boxes": [
+      1,
+      300,
+      4
+    ],
+    "scores": [
+      1,
+      300
+    ]
+  }
+}

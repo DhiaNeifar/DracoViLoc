@@ -23,6 +23,7 @@ colcon build \
     isaac_ros_yolo_bringup \
     isaac_ros_yolo_direction \
     yolo_video_publisher \
+    isaac_ros_rtdetr \
   --symlink-install \
   --cmake-args -DBUILD_TESTING=OFF
 

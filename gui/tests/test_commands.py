@@ -82,3 +82,14 @@ def test_resolved_yolo_model_paths_reach_the_container():
     assert "model_path:=/w/models/m.onnx" in args[-1]
     assert "engine_path:=/w/models/m.orin.plan" in args[-1]
     assert "HOST_USER_UID=" + str(__import__("os").getuid()) in args
+
+
+def test_visual_detector_reaches_the_container_launch():
+    from dracoviloc_gui.validation import validate_profile
+    profile = RunProfile(yolo_enabled=True, yolo_image="img", visual_detector="dfine_n",
+                         dfine_n_model="full_dfine_n_20261025_best")
+    args = yolo_docker_command(Path("/tmp/repo"), profile, ("/m/a.onnx", "/m/a.orin.plan"))
+    assert "detector:=dfine_n" in args[-1]
+    assert profile.visual_model_choice() == "full_dfine_n_20261025_best"
+    assert RunProfile(yolo_model="y").visual_model_choice() == "y"
+    assert any("Visual detector" in error for error in validate_profile(RunProfile(visual_detector="ssd")))

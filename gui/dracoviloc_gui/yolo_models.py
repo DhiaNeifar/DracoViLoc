@@ -1,21 +1,30 @@
-"""YOLO model registry: checkpoint -> ONNX -> TensorRT plan for this GPU.
+"""Visual model registry: checkpoint -> ONNX -> TensorRT plan for this GPU.
 
-Where things live:
+Two model families, each in its own folder:
 
-* ``models/yolo/<id>.pt``           trained checkpoint (git LFS, source of truth)
-* ``models/yolo/<id>.onnx[.json]``  portable export + export record (git LFS);
-                                    exported once, usable on every machine
-* ``<isaac>/models/<id>.onnx``      staged copy read by the YOLO container
+* YOLO (Ultralytics)  ``models/yolo/<id>.pt``    e.g. drone_yolo11n_20260917_best
+* D-FINE              ``models/dfine/<id>.pth``  e.g. full_dfine_s_20261024_best
+                      (size n, s, ... is part of the id; D-FINE-N and D-FINE
+                      are separate detectors in the run setup)
+
+Where things live (``<family>`` = yolo or dfine):
+
+* ``models/<family>/<id>.<pt|pth>``   trained checkpoint (git LFS, source of truth)
+* ``models/<family>/<id>.onnx[.json]`` portable export + export record (git LFS);
+                                       exported once, usable on every machine
+* ``<isaac>/models/<id>.onnx``         staged copy read by the detector container
 * ``<isaac>/models/<id>.<gpu>.plan[.json]``
-                                    TensorRT plan + build record; machine
-                                    specific, so the GPU is part of its name
+                                       TensorRT plan + build record; machine
+                                       specific, so the GPU is part of its name
 
 Export runs the image's pinned CPU environment ($YOLO_EXPORT_PYTHON) without
 network; plans are built by trtexec with the Isaac TensorRT node's defaults
-(FP16, 64 MiB workspace, batch 1), then benchmarked once.
+(FP16, 64 MiB workspace, batch 1), then benchmarked once. D-FINE exports use
+the D-FINE source at a pinned commit (see dfine_source()).
 
-Also a command-line tool:  python -m dracoviloc_gui.yolo_models
+Also a command-line tool:  python -m dracoviloc_gui.yolo_models [--family yolo|dfine]
 {list | export ID | build-plan ID | prepare ID|auto | resolve ID|auto}
+(with a model ID, the family follows from the ID)
 """
 from __future__ import annotations
 
@@ -39,7 +48,25 @@ PLAN_ARGS = ("--fp16", "--memPoolSize=workspace:64M")
 DATE = re.compile(r"(20\d{6})")
 CACHE = Path.home() / ".cache/dracoviloc"
 
+# folder under models/, checkpoint suffix, name shown in the GUI
+FAMILIES = {"yolo": ("yolo", ".pt", "YOLO"), "dfine": ("dfine", ".pth", "D-FINE")}
+DFINE_SIZE = re.compile(r"_dfine_([nsmlx])_")
+DFINE_REPOSITORY = "https://github.com/Peterande/D-FINE.git"
+DFINE_COMMIT = "956d1709314c2c6a4df6f34de232054578a7449f"
+
 OK, STALE, MISSING, UNAVAILABLE = "ok", "stale", "missing", "unavailable"
+
+
+def family_of(model_id: str) -> str:
+    return "dfine" if DFINE_SIZE.search(model_id) else "yolo"
+
+
+def detector_of(model_id: str) -> str:
+    """Run-setup detector a model belongs to: 'yolo', 'dfine' (S) or 'dfine_n', ..."""
+    match = DFINE_SIZE.search(model_id)
+    if not match:
+        return "yolo"
+    return "dfine" if match.group(1) == "s" else f"dfine_{match.group(1)}"
 
 
 @dataclass
@@ -53,6 +80,7 @@ class ModelInfo:
     plan_state: str
     plan_detail: str
     plan_file: str
+    family: str = "yolo"
 
     @property
     def ready(self) -> bool:
@@ -68,6 +96,7 @@ class ModelInfo:
         data = asdict(self)
         data["ready"] = self.ready
         data["experiment"] = self.experiment
+        data["detector"] = detector_of(self.id)
         return data
 
 
@@ -143,11 +172,39 @@ def tensorrt_version(image: str) -> str:
     return version
 
 
+def dfine_source(project_root: Path) -> Path:
+    """D-FINE source tree at DFINE_COMMIT (only its model code is used).
+
+    yolo-alt/D-FINE is used when it is at that commit; otherwise a clone is
+    kept in third_party/D-FINE (not in git), made once with network access."""
+    def head(path: Path) -> str:
+        result = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"],
+                                capture_output=True, text=True)
+        return result.stdout.strip() if result.returncode == 0 else ""
+
+    project_root = Path(project_root)
+    local = project_root / "yolo-alt/D-FINE"
+    if head(local) == DFINE_COMMIT:
+        return local
+    target = project_root / "third_party/D-FINE"
+    if head(target) != DFINE_COMMIT:
+        if not (target / ".git").is_dir():
+            source = str(local) if (local / ".git").exists() else DFINE_REPOSITORY
+            print(f"Cloning D-FINE from {source} into {target}", flush=True)
+            subprocess.run(["git", "clone", "--quiet", source, str(target)], check=True)
+        if subprocess.run(["git", "-C", str(target), "checkout", "--quiet", DFINE_COMMIT]).returncode != 0:
+            subprocess.run(["git", "-C", str(target), "fetch", "--quiet", DFINE_REPOSITORY], check=True)
+            subprocess.run(["git", "-C", str(target), "checkout", "--quiet", DFINE_COMMIT], check=True)
+    return target
+
+
 class Registry:
     def __init__(self, project_root: Path, workspace: Path | None = None,
-                 gpu: str | None = None, image: str | None = None) -> None:
+                 gpu: str | None = None, image: str | None = None, family: str = "yolo") -> None:
         self.project_root = Path(project_root)
-        self.models = self.project_root / "models/yolo"
+        self.family = family
+        folder, self.suffix, self.label = FAMILIES[family]
+        self.models = self.project_root / "models" / folder
         self.workspace = Path(workspace) if workspace else isaac_root()
         self.staged = self.workspace / "models"
         self.gpu = gpu_name() if gpu is None else gpu
@@ -160,6 +217,9 @@ class Registry:
             self._image = resolve_yolo_image(AUTO)
         return self._image
 
+    def checkpoint(self, model_id: str) -> Path:
+        return self.models / f"{model_id}{self.suffix}"
+
     def plan_path(self, model_id: str) -> Path:
         return self.staged / f"{model_id}.{self.tag}.plan"
 
@@ -169,7 +229,7 @@ class Registry:
 
     # ------------------------------------------------------------------ status
     def onnx_status(self, model_id: str) -> tuple[str, str]:
-        checkpoint = self.models / f"{model_id}.pt"
+        checkpoint = self.checkpoint(model_id)
         onnx = self.models / f"{model_id}.onnx"
         if not onnx.exists():
             return MISSING, "Not exported yet"
@@ -200,22 +260,24 @@ class Registry:
 
     def list(self, check_tensorrt: bool = True) -> list[ModelInfo]:
         trt = tensorrt_version(self.image) if (check_tensorrt and self.gpu and self.image) else None
-        ids = sorted({path.stem for pattern in ("*.pt", "*.onnx")
+        ids = sorted({path.stem for pattern in (f"*{self.suffix}", "*.onnx")
                       for path in self.models.glob(pattern)})
         models = []
         for model_id in ids:
             onnx_state, onnx_detail = self.onnx_status(model_id)
             plan_state, plan_detail = self.plan_status(model_id, onnx_state, trt)
             models.append(ModelInfo(
-                model_id, model_date(model_id, self.models / f"{model_id}.pt"), False,
-                (self.models / f"{model_id}.pt").exists(), onnx_state, onnx_detail,
-                plan_state, plan_detail, str(self.plan_path(model_id))))
+                model_id, model_date(model_id, self.checkpoint(model_id)), False,
+                self.checkpoint(model_id).exists(), onnx_state, onnx_detail,
+                plan_state, plan_detail, str(self.plan_path(model_id)), self.family))
+        if self.family != "yolo":
+            return sorted(models, key=lambda model: (model.date, model.id), reverse=True)
         # Models that only exist in the Isaac workspace (deployed before this
         # registry). Their plan's GPU is unknown, so they are never chosen
         # automatically but can still be selected by name.
         for onnx in sorted(self.staged.glob("*.onnx")):
             model_id = onnx.stem
-            if model_id in ids:
+            if model_id in ids or family_of(model_id) != "yolo":
                 continue
             plan = self.staged / f"{model_id}.plan"
             models.append(ModelInfo(
@@ -226,21 +288,25 @@ class Registry:
                 str(plan)))
         return sorted(models, key=lambda model: (model.date, model.id), reverse=True)
 
-    def resolve(self, choice: str, models: list[ModelInfo] | None = None) -> ModelInfo:
-        """Model used for a run: the chosen one, or for 'auto' the newest ready one."""
+    def resolve(self, choice: str, models: list[ModelInfo] | None = None,
+                detector: str | None = None) -> ModelInfo:
+        """Model used for a run: the chosen one, or for 'auto' the newest ready
+        one (of `detector`, e.g. 'dfine_n', when given)."""
         models = self.list() if models is None else models
+        name = DETECTOR_NAMES.get(detector or self.family, self.label)
         if choice in ("", AUTO):
-            ready = [model for model in models if model.ready and not model.legacy]
+            ready = [model for model in models if model.ready and not model.legacy
+                     and (detector is None or detector_of(model.id) == detector)]
             if not ready:
                 raise LookupError(
-                    f"No YOLO model has a TensorRT plan for {self.gpu or 'this machine'} yet; "
-                    "build one in Setup & builds > YOLO models.")
+                    f"No {name} model has a TensorRT plan for {self.gpu or 'this machine'} yet; "
+                    "build one in Setup & builds > Visual models.")
             return ready[0]
         model = next((model for model in models if model.id == choice), None)
         if model is None:
-            raise LookupError(f"YOLO model '{choice}' not found")
+            raise LookupError(f"{name} model '{choice}' not found")
         if not model.ready:
-            raise LookupError(f"YOLO model '{choice}' is not ready: {model.plan_detail}")
+            raise LookupError(f"{name} model '{choice}' is not ready: {model.plan_detail}")
         return model
 
     # ----------------------------------------------------------------- actions
@@ -254,16 +320,21 @@ class Registry:
                                 stderr=subprocess.STDOUT, text=True, bufsize=1)
 
     def export(self, model_id: str) -> int:
-        checkpoint = self.models / f"{model_id}.pt"
+        checkpoint = self.checkpoint(model_id)
         if not checkpoint.exists():
             print(f"No checkpoint {checkpoint}", file=sys.stderr)
             return 2
         tools = self.project_root / "isaac_ros/tools"
-        process = self._docker(
-            ["--name", "dracoviloc_yolo_export", "-v", f"{self.models}:/models",
-             "-v", f"{tools}:/tools:ro", "--workdir", "/models"],
-            ["bash", "-c", f'exec "$YOLO_EXPORT_PYTHON" /tools/export_yolo.py '
-                           f'--model /models/{model_id}.pt --metadata'])
+        mounts = ["-v", f"{self.models}:/models", "-v", f"{tools}:/tools:ro", "--workdir", "/models"]
+        if self.family == "dfine":
+            mounts += ["-v", f"{dfine_source(self.project_root)}:/dfine:ro"]
+            size = DFINE_SIZE.search(model_id).group(1)
+            command = (f'exec "$YOLO_EXPORT_PYTHON" /tools/export_dfine.py --model /models/{checkpoint.name} '
+                       f'--size {size} --dfine /dfine --metadata')
+        else:
+            command = f'exec "$YOLO_EXPORT_PYTHON" /tools/export_yolo.py --model /models/{checkpoint.name} --metadata'
+        process = self._docker(["--name", f"dracoviloc_{self.family}_export", *mounts],
+                               ["bash", "-c", command])
         for line in process.stdout:
             print(line, end="", flush=True)
         return process.wait()
@@ -301,7 +372,7 @@ class Registry:
             f"{TRTEXEC} --loadEngine={partial} --warmUp=500 --duration=3",
         ])
         process = self._docker(
-            ["--name", "dracoviloc_yolo_plan", "-v", f"{self.workspace}:{CONTAINER_WORKSPACE}"],
+            ["--name", f"dracoviloc_{self.family}_plan", "-v", f"{self.workspace}:{CONTAINER_WORKSPACE}"],
             ["bash", "-c", script], gpu=True)
         throughput = None
         for line in process.stdout:
@@ -335,7 +406,7 @@ class Registry:
         if model_id in ("", AUTO):
             candidates = [model for model in self.list() if not model.legacy and model.has_checkpoint]
             if not candidates:
-                print("No YOLO checkpoints in models/yolo", file=sys.stderr)
+                print(f"No {self.label} checkpoints in {self.models}", file=sys.stderr)
                 return 2
             model_id = candidates[0].id
             print(f"Newest model: {model_id}", flush=True)
@@ -348,6 +419,31 @@ class Registry:
             return self.build_plan(model_id)
         print(f"{model_id} is ready on {self.gpu}", flush=True)
         return 0
+
+
+DETECTOR_NAMES = {"yolo": "YOLO", "dfine": "D-FINE", "dfine_n": "D-FINE-N"}
+
+
+def registry_for(project_root: Path, model_id: str, **kwargs) -> Registry:
+    return Registry(project_root, family=family_of(model_id), **kwargs)
+
+
+def list_all(project_root: Path, check_tensorrt: bool = True, **kwargs) -> list[ModelInfo]:
+    """Models of every family, newest first."""
+    first = Registry(project_root, **kwargs)
+    models = first.list(check_tensorrt)
+    for family in FAMILIES:
+        if family != first.family:
+            models += Registry(project_root, workspace=first.workspace, gpu=first.gpu,
+                               image=first._image, family=family).list(check_tensorrt)
+    return sorted(models, key=lambda model: (model.date, model.id), reverse=True)
+
+
+def resolve_detector(project_root: Path, detector: str, choice: str,
+                     **kwargs) -> tuple[Registry, ModelInfo]:
+    """(registry, model) a run of `detector` ('yolo', 'dfine', 'dfine_n') uses."""
+    registry = Registry(project_root, family="yolo" if detector == "yolo" else "dfine", **kwargs)
+    return registry, registry.resolve(choice, detector=detector)
 
 
 def newest_needs_work(registry: Registry) -> ModelInfo | None:
@@ -363,14 +459,18 @@ def main(argv: list[str] | None = None) -> int:
                                      description=__doc__.split("\n\n")[0])
     parser.add_argument("--project-root", type=Path,
                         default=Path(os.environ.get("DRACOVILOC_ROOT", Path(__file__).resolve().parents[2])))
+    parser.add_argument("--family", choices=sorted(FAMILIES), help="for list and 'auto' (default yolo)")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list")
     for name in ("export", "build-plan", "prepare", "resolve"):
         commands.add_parser(name).add_argument("model")
     args = parser.parse_args(argv)
-    registry = Registry(args.project_root)
+    model_arg = getattr(args, "model", AUTO)
+    family = args.family or (family_of(model_arg) if model_arg not in ("", AUTO) else "yolo")
+    registry = Registry(args.project_root, family=family)
     if args.command == "list":
-        for model in registry.list():
+        models = registry.list() if args.family else list_all(args.project_root)
+        for model in models:
             print(f"{model.id:40} {model.date:10} onnx={model.onnx_state:8} plan={model.plan_state:8} "
                   f"{model.plan_detail}")
         return 0

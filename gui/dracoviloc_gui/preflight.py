@@ -10,7 +10,7 @@ from pathlib import Path
 from .host_platform import (
     AUTO, gpu_name, isaac_root, resolve_mobilenet_runtime, resolve_yolo_image)
 from .models import CheckResult, RunProfile
-from .yolo_models import Registry
+from .yolo_models import DETECTOR_NAMES, resolve_detector
 from .validation import validate_profile
 
 
@@ -149,12 +149,14 @@ def run_preflight(project_root: Path, profile: RunProfile) -> list[CheckResult]:
         results.append(_exists(
             "isaac_workspace", "Isaac ROS workspace", isaac_root() / "install/setup.bash"))
         try:
-            model = Registry(project_root).resolve(profile.yolo_model)
+            name = DETECTOR_NAMES.get(profile.visual_detector, profile.visual_detector)
+            choice = profile.visual_model_choice()
+            _, model = resolve_detector(project_root, profile.visual_detector, choice)
             results.append(CheckResult(
-                "yolo_model", "YOLO model", True,
-                f"{model.id} · {model.plan_detail}" + (" (auto)" if profile.yolo_model == AUTO else "")))
+                "yolo_model", f"{name} model", True,
+                f"{model.id} · {model.plan_detail}" + (" (auto)" if choice == AUTO else "")))
         except LookupError as error:
-            results.append(CheckResult("yolo_model", "YOLO model", False, str(error)))
+            results.append(CheckResult("yolo_model", f"{name} model", False, str(error)))
         camera_found = any(
             "icspring" in name.read_text(errors="ignore").lower()
             for name in Path("/sys/class/video4linux").glob("video*/name")

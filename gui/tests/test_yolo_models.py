@@ -87,3 +87,30 @@ def test_no_gpu_means_plans_unavailable(tmp_path):
     registry = Registry(tmp_path, workspace=tmp_path / "ws", gpu="", image="x")
     export(registry, "m_20260101")
     assert registry.list(check_tensorrt=False)[0].plan_state == "unavailable"
+
+
+def test_dfine_family_and_detectors(tmp_path, monkeypatch):
+    monkeypatch.setattr(yolo_models, "CACHE", tmp_path / "cache")
+    root, workspace = tmp_path / "repo", tmp_path / "ws"
+    (root / "models/dfine").mkdir(parents=True)
+    (workspace / "models").mkdir(parents=True)
+    dfine = Registry(root, workspace=workspace, gpu="Orin (nvgpu)", image="x", family="dfine")
+    for model_id in ("full_dfine_s_20261024_best", "full_dfine_n_20261025_best"):
+        pth = write(dfine.checkpoint(model_id), model_id.encode())
+        write(dfine.models / f"{model_id}.onnx", b"graph-" + model_id.encode())
+        write(dfine.models / f"{model_id}.onnx.json", json.dumps({
+            "source_sha256": yolo_models.sha256(pth), "outputs": {}}))
+        build_plan(dfine, model_id)
+        write(workspace / "models" / f"{model_id}.onnx", b"staged")  # not a legacy YOLO model
+    assert yolo_models.detector_of("full_dfine_s_20261024_best") == "dfine"
+    assert yolo_models.detector_of("full_dfine_n_20261025_best") == "dfine_n"
+    assert yolo_models.detector_of("drone_yolo11n_20260917_best") == "yolo"
+    models = dfine.list(check_tensorrt=False)
+    assert [model.id for model in models] == ["full_dfine_n_20261025_best", "full_dfine_s_20261024_best"]
+    assert all(model.ready and model.family == "dfine" for model in models)
+    assert dfine.resolve("auto", models, detector="dfine").id == "full_dfine_s_20261024_best"
+    assert dfine.resolve("auto", models, detector="dfine_n").id == "full_dfine_n_20261025_best"
+    yolo = Registry(root, workspace=workspace, gpu="Orin (nvgpu)", image="x")
+    assert yolo.list(check_tensorrt=False) == []
+    with pytest.raises(LookupError, match="No YOLO model"):
+        yolo.resolve("auto", [])

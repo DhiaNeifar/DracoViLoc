@@ -84,6 +84,12 @@ class RunProfile:
     # model id from models/yolo (see yolo_models.py). The two paths below are
     # used only by remote (agent) runs.
     yolo_model: str = "auto"
+    # Visual detector run in the detector container while yolo_enabled is on:
+    # "yolo", "dfine" (D-FINE S) or "dfine_n" (D-FINE N), each with its own
+    # model choice ("auto" = newest with a TensorRT plan for this GPU).
+    visual_detector: str = "yolo"
+    dfine_model: str = "auto"
+    dfine_n_model: str = "auto"
     yolo_model_path: str = "/workspaces/isaac_ros-dev/models/drone_yolo11n_best.onnx"
     yolo_engine_path: str = "/workspaces/isaac_ros-dev/models/drone_yolo11n_best.plan"
     use_yolo_viewer: bool = False
@@ -96,6 +102,10 @@ class RunProfile:
     def from_dict(cls, data: dict[str, Any]) -> "RunProfile":
         allowed = cls.__dataclass_fields__.keys()
         return cls(**{key: value for key, value in data.items() if key in allowed}).apply_rules()
+
+    def visual_model_choice(self) -> str:
+        return {"dfine": self.dfine_model, "dfine_n": self.dfine_n_model}.get(
+            self.visual_detector, self.yolo_model)
 
     def apply_rules(self) -> "RunProfile":
         """Fixed pipeline rules: ODAS and the EKF always run, the EKF fuses

@@ -48,6 +48,22 @@ When a new YOLO version is selected, update DracoViLoc's model directory first.
   `/yolo/direction` and `/yolo/target_marker`.
 - `yolo_video_publisher`: publishes a V4L2 camera or prerecorded video.
 
+## D-FINE
+
+D-FINE (S and N) runs in the same container as an alternative visual detector:
+`yolo_camera.launch.py detector:=dfine` (or `dfine_n`) starts
+`dfine_video_inference.launch.py` instead of the YOLO inference. D-FINE
+exports have the RT-DETR interface, so Isaac's `isaac_ros_rtdetr`
+preprocessor and decoder are used (built by `scripts/setup_isaac_ros.sh`).
+The image is stretched to 640x640 as in D-FINE training, and the pipeline
+publishes the same `/detections_output` and `/yolov8_encoder/resize/camera_info`
+as YOLO, so the direction publisher, preview overlay and EKF are shared.
+
+Checkpoints are fetched from Drive into `models/dfine/<name>_dfine_<size>_<date>_best.pth`
+and exported with `tools/export_dfine.py` (D-FINE source at a pinned commit, see
+`gui/dracoviloc_gui/yolo_models.py`). The control center's Setup & builds page
+does fetch, export and TensorRT plans for both families.
+
 ## 1. Deploy the latest checkpoint
 
 On the host:

@@ -29,6 +29,12 @@ ApplicationWindow {
         function cleanUpEverything() {}
         function checkRobots() {}
         function removeExpertOption(name) {}
+        property bool rvizEmbedded: false
+        property string arrowsJson: "{}"
+        function setArrowVisible(name, shown) {}
+        function setRvizArea(x, y, w, h, visible) {}
+        property string rvizStatus: ""
+        function setThreeDView(on) {}
         property string setupJson: "{\"jobs\": [], \"saved_images\": []}"
         property bool jobActive: false
         function refreshSetup() {}
@@ -38,6 +44,7 @@ ApplicationWindow {
         function saveProjectImage() {}
         function loadProjectImage(name) {}
         function exportModel(id) {}
+        function setJobOption(id, name, value) {}
         function buildModelPlan(id) {}
         function terminalModel(name) { return null }
         function uiEvent(action, detail) {}
@@ -107,6 +114,7 @@ ApplicationWindow {
     readonly property var pageNames: ["Dashboard", "Perception", "Run setup", "Recordings", "Logs", "Processes", "Setup & builds", "System"]
     readonly property var pageTitles: ["Operations", "Perception", "Configure run", "Recording library", "System logs", "Processes", "Setup & builds", "System readiness"]
     property string setupTerminal: ""
+    readonly property string visualName: ({ yolo: "YOLO", dfine: "D-FINE", dfine_n: "D-FINE-N" })[root.profile.visual_detector || "yolo"] || "YOLO"
 
     palette.window: "#0B1118"
     palette.windowText: "#E8F0F7"
@@ -316,6 +324,32 @@ ApplicationWindow {
             }
         }
     }
+    component HoldButton: DelayButton {
+        id: hold
+        implicitHeight: 42
+        leftPadding: 18
+        rightPadding: 18
+        delay: 1000
+        font.pixelSize: 14
+        font.weight: Font.DemiBold
+        background: Rectangle {
+            radius: 9
+            color: hold.enabled ? "#193842" : "#17212B"
+            border.color: hold.enabled ? "#35C6D0" : "#293641"
+            clip: true
+            Rectangle {  // fills while the button is held
+                width: parent.width * hold.progress; height: parent.height
+                radius: 9; color: "#2AA3AB"; opacity: 0.55
+            }
+        }
+        contentItem: Text {
+            text: hold.text
+            color: hold.enabled ? "#DDFBFD" : "#637381"
+            font: hold.font
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+    }
     component SafetyButton: Button {
         id: control
         implicitHeight: 46
@@ -462,14 +496,60 @@ ApplicationWindow {
 
                 // Dashboard
                 ScrollView {
+                    id: dashboardScroll
                     contentWidth: availableWidth
                     ColumnLayout {
-                        width: parent.width; spacing: 16
-                        anchors.margins: 22
+                        x: 22; width: parent.width - 44; spacing: 16
+                        Item { Layout.preferredHeight: 6 }
+                        Panel {
+                            Layout.fillWidth: true; Layout.preferredHeight: 92
+                            RowLayout {
+                                anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 16; spacing: 10
+                                ColumnLayout {
+                                    spacing: 0; Layout.preferredWidth: 150
+                                    Label { text: root.controller.state; color: "#55DCE5"; font.pixelSize: 20; font.bold: true }
+                                    MutedText { text: (root.profile.hardware_mode === "real" ? "REAL" : "MOCK") + (root.profile.dual_arm ? " · 2 cobots" : " · 1 cobot"); color: root.profile.hardware_mode === "real" ? "#D8A65A" : "#69D9B1" }
+                                }
+                                ComboBox {
+                                    id: dashboardProfiles
+                                    Layout.preferredWidth: 220
+                                    model: root.controller.profileNames
+                                    currentIndex: Math.max(0, root.controller.profileNames.indexOf(root.profile.name))
+                                    enabled: !root.controller.runActive
+                                    onActivated: root.controller.selectProfile(currentText)
+                                }
+                                CalmButton { text: "Preflight"; enabled: !root.controller.runActive && (root.profile.execution_target !== "remote" || root.remoteState.state === "connected"); onClicked: root.controller.runPreflight() }
+                                CalmButton { text: "Start run"; enabled: !root.controller.runActive && (root.profile.execution_target !== "remote" || root.controller.remoteControllable); onClicked: root.controller.startRun() }
+                                CalmButton { text: "Stop all safely"; enabled: root.controller.runActive && (root.profile.execution_target !== "remote" || root.controller.remoteControllable); onClicked: root.controller.stopAll() }
+                                Rectangle { width: 1; Layout.fillHeight: true; Layout.topMargin: 18; Layout.bottomMargin: 18; color: "#263746" }
+                                HoldButton {
+                                    text: root.profile.dual_arm ? "Hold to home both" : "Hold to home"
+                                    enabled: (root.controller.state === "Ready" || root.controller.state === "Home Ready") && root.liveStatus.home_service === true && (root.liveStatus.joint_count || 0) >= (root.profile.dual_arm ? 12 : 6) && (root.profile.execution_target !== "remote" || root.controller.remoteControllable)
+                                    onActivated: root.controller.requestHome()
+                                }
+                                HoldButton {
+                                    visible: root.controller.state !== "Tracking"
+                                    text: "Hold to enable tracking"
+                                    enabled: (root.controller.state === "Home Ready" || root.controller.state === "Ready") && root.liveStatus.tracking_service === true && (root.profile.execution_target !== "remote" || root.controller.remoteControllable)
+                                    onActivated: root.controller.enableTracking()
+                                }
+                                CalmButton {
+                                    visible: root.controller.state === "Tracking"
+                                    text: "Disable tracking"
+                                    onClicked: root.controller.stopMotion()
+                                }
+                                SafetyButton {
+                                    visible: root.controller.state === "Fault" && root.controller.runActive && root.profile.hardware_mode === "real"
+                                    text: "E-stop engaged · force shutdown"
+                                    onClicked: forceStopDialog.open()
+                                }
+                                Item { Layout.fillWidth: true }
+                            }
+                        }
                         RowLayout {
                             Layout.fillWidth: true; spacing: 16
                             Panel {
-                                Layout.fillWidth: true; Layout.preferredWidth: 760; Layout.minimumWidth: 480; Layout.preferredHeight: 455
+                                Layout.fillWidth: true; Layout.horizontalStretchFactor: 2; Layout.preferredWidth: 400; Layout.minimumWidth: 380; Layout.preferredHeight: 660
                                 ColumnLayout {
                                     anchors.fill: parent; anchors.margins: 16
                                     RowLayout {
@@ -493,61 +573,71 @@ ApplicationWindow {
                                     }
                                 }
                             }
-                            ColumnLayout {
-                                Layout.preferredWidth: 355; Layout.minimumWidth: 355; Layout.maximumWidth: 390; spacing: 16
-                                Panel {
-                                    Layout.fillWidth: true; Layout.preferredHeight: 250
-                                    ColumnLayout {
-                                        anchors.fill: parent; anchors.margins: 16; spacing: 10
-                                        SectionTitle { text: "Run state" }
-                                        Label { text: root.controller.state; color: "#55DCE5"; font.pixelSize: 25; font.bold: true }
-                                        ComboBox {
-                                            Layout.fillWidth: true
-                                            model: root.controller.profileNames
-                                            currentIndex: Math.max(0, root.controller.profileNames.indexOf(root.profile.name))
-                                            enabled: !root.controller.runActive
-                                            onActivated: root.controller.selectProfile(currentText)
+                            Panel {
+                                Layout.fillWidth: true; Layout.horizontalStretchFactor: 3; Layout.preferredWidth: 600; Layout.minimumWidth: 480; Layout.preferredHeight: 660
+                                ColumnLayout {
+                                    anchors.fill: parent; anchors.margins: 16
+                                    RowLayout {
+                                        Layout.fillWidth: true; spacing: 10
+                                        SectionTitle { text: "3D view" }
+                                        Repeater {
+                                            // One toggle per running source; colours match the arrows.
+                                            model: [["yolo", root.visualName, "#338CFF", root.profile.yolo_enabled],
+                                                    ["mobilenetv2", "MobileNetV2", "#F21AD9", root.profile.mobilenetv2_enabled],
+                                                    ["ast", "AST", "#EBEBEB", root.profile.ast_enabled],
+                                                    ["gre", "GRE", "#1AF2F2", root.profile.gre_enabled],
+                                                    ["ekf", "EKF", "#FFB30D", root.profile.yolo_enabled || root.profile.mobilenetv2_enabled]]
+                                                .filter(arrow => arrow[3])
+                                            delegate: CheckBox {
+                                                id: arrowToggle
+                                                required property var modelData
+                                                text: modelData[1]
+                                                checked: JSON.parse(root.controller.arrowsJson)[modelData[0]] !== false
+                                                onToggled: root.controller.setArrowVisible(modelData[0], checked)
+                                                indicator: Rectangle {
+                                                    x: arrowToggle.leftPadding; anchors.verticalCenter: parent.verticalCenter
+                                                    width: 16; height: 16; radius: 4
+                                                    color: arrowToggle.checked ? arrowToggle.modelData[2] : "transparent"
+                                                    border.color: arrowToggle.modelData[2]; border.width: 2
+                                                }
+                                            }
                                         }
-                                        MutedText { text: (root.profile.hardware_mode === "real" ? "REAL " : "MOCK ") + (root.profile.dual_arm ? "· TWO COBOTS" : "· ONE COBOT") + " · tracking " + root.profile.tracking_mode; color: root.profile.hardware_mode === "real" ? "#D8A65A" : "#69D9B1" }
-                                        RowLayout {
-                                            CalmButton { text: "Preflight"; enabled: !root.controller.runActive && (root.profile.execution_target !== "remote" || root.remoteState.state === "connected"); onClicked: root.controller.runPreflight() }
-                                            CalmButton { text: "Start run"; enabled: !root.controller.runActive && (root.profile.execution_target !== "remote" || root.controller.remoteControllable); onClicked: root.controller.startRun() }
-                                        }
-                                        CalmButton { Layout.fillWidth: true; text: "Stop all safely"; enabled: root.controller.runActive && (root.profile.execution_target !== "remote" || root.controller.remoteControllable); onClicked: root.controller.stopAll() }
-                                        SafetyButton {
-                                            Layout.fillWidth: true
-                                            visible: root.controller.state === "Fault" && root.controller.runActive && root.profile.hardware_mode === "real"
-                                            text: "E-stop engaged · force shutdown"
-                                            onClicked: forceStopDialog.open()
+                                        Item { Layout.fillWidth: true }
+                                        Switch {
+                                            text: "Show"
+                                            checked: root.profile.use_rviz
+                                            onToggled: root.controller.setThreeDView(checked)
                                         }
                                     }
-                                }
-                                Panel {
-                                    Layout.fillWidth: true; Layout.preferredHeight: 227
-                                    ColumnLayout {
-                                        anchors.fill: parent; anchors.margins: 16; spacing: 10
-                                        SectionTitle { text: "Motion control" }
-                                        MutedText { Layout.fillWidth: true; text: "Motion never starts with the run. Home first, then arm tracking." }
-                                        DelayButton {
-                                            Layout.fillWidth: true; delay: 1000
-                                            text: root.profile.dual_arm ? "Hold to home both cobots" : "Hold to home"
-                                            enabled: (root.controller.state === "Ready" || root.controller.state === "Home Ready") && root.liveStatus.home_service === true && (root.liveStatus.joint_count || 0) >= (root.profile.dual_arm ? 12 : 6) && (root.profile.execution_target !== "remote" || root.controller.remoteControllable)
-                                            onActivated: root.controller.requestHome()
+                                    Rectangle {
+                                        Layout.fillWidth: true; Layout.fillHeight: true
+                                        radius: 10; color: "#080D12"; clip: true
+                                        // RViz's own window is placed over this area (see x11_embed.py).
+                                        Item {
+                                            id: rvizArea
+                                            anchors.fill: parent; anchors.margins: 2
+                                            Timer {
+                                                interval: 100; repeat: true
+                                                running: root.controller.rvizEmbedded
+                                                onTriggered: rvizArea.report()
+                                            }
+                                            function report() {
+                                                let topLeft = rvizArea.mapToItem(null, 0, 0)
+                                                let view = dashboardScroll.mapToItem(null, 0, 0)
+                                                // Only the part inside the scrolling page is visible.
+                                                let top = Math.max(topLeft.y, view.y)
+                                                let bottom = Math.min(topLeft.y + rvizArea.height, view.y + dashboardScroll.height)
+                                                let covered = preflightDrawer.visible || closeDialog.visible || forceStopDialog.visible
+                                                    || dashboardProfiles.popup.visible
+                                                let shown = root.pageNames[root.currentPage] === "Dashboard" && !covered && bottom - top > 40
+                                                root.controller.setRvizArea(topLeft.x, top, rvizArea.width, Math.max(0, bottom - top), shown)
+                                            }
                                         }
-                                        DelayButton {
-                                            Layout.fillWidth: true; delay: 1000
-                                            visible: root.controller.state !== "Tracking"
-                                            text: "Hold to enable tracking"
-                                            enabled: (root.controller.state === "Home Ready" || root.controller.state === "Ready") && root.liveStatus.tracking_service === true && (root.profile.execution_target !== "remote" || root.controller.remoteControllable)
-                                            onActivated: root.controller.enableTracking()
+                                        MutedText {
+                                            anchors.centerIn: parent
+                                            visible: !root.controller.rvizEmbedded
+                                            text: root.controller.rvizStatus
                                         }
-                                        CalmButton {
-                                            Layout.fillWidth: true
-                                            visible: root.controller.state === "Tracking"
-                                            text: "Disable tracking"
-                                            onClicked: root.controller.stopMotion()
-                                        }
-                                        MutedText { Layout.fillWidth: true; text: "Software stop is not a physical emergency stop."; color: "#D8A65A" }
                                     }
                                 }
                             }
@@ -591,7 +681,7 @@ ApplicationWindow {
                                 ColumnLayout {
                                     Layout.preferredWidth: 220
                                     SectionTitle { text: "Direction cue" }
-                                    MutedText { text: "EKF preferred, then YOLO or MobileNetV2" }
+                                    MutedText { text: "EKF preferred, then " + root.visualName + " or MobileNetV2" }
                                     Label {
                                         property var directions: root.liveStatus.directions || ({})
                                         property var vector: directions["/ekf/direction"] || directions["/yolo/direction"] || directions["/mobilenetv2/direction"]
@@ -680,7 +770,7 @@ ApplicationWindow {
                                 Layout.fillWidth: true; Layout.preferredWidth: 2; Layout.preferredHeight: 470
                                 ColumnLayout {
                                     anchors.fill: parent; anchors.margins: 14; spacing: 10
-                                    SectionTitle { text: "YOLO" }
+                                    SectionTitle { text: root.visualName }
                                     GridLayout {
                                         columns: 3; columnSpacing: 18; rowSpacing: 8
                                         Metric { label: "Inference rate"; value: root.fmt(perceptionScroll.yolo.inference_rate_hz, 1) + " Hz" }
@@ -972,31 +1062,71 @@ ApplicationWindow {
 
                                     Rectangle { Layout.fillWidth: true; height: 1; color: "#263746" }
                                     Label { text: "Visual"; color: "#67DFE7"; font.bold: true }
-                                    CheckBox { text: "YOLO"; checked: root.profile.yolo_enabled; enabled: !root.controller.runActive; onToggled: root.controller.setOption("yolo_enabled", checked) }
+                                    RowLayout {
+                                        id: detectorChoice
+                                        spacing: 4
+                                        // One visual detector at a time; all feed the same EKF input.
+                                        property string current: root.profile.yolo_enabled ? (root.profile.visual_detector || "yolo") : "off"
+                                        Repeater {
+                                            model: [["off", "Off"], ["yolo", "YOLO"], ["dfine", "D-FINE"], ["dfine_n", "D-FINE-N"]]
+                                            delegate: RadioButton {
+                                                required property var modelData
+                                                text: modelData[1]
+                                                checked: detectorChoice.current === modelData[0]
+                                                enabled: !root.controller.runActive
+                                                onClicked: {
+                                                    if (modelData[0] === "off") {
+                                                        root.controller.setOption("yolo_enabled", false)
+                                                    } else {
+                                                        root.controller.setOption("visual_detector", modelData[0])
+                                                        root.controller.setOption("yolo_enabled", true)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                     ComboBox {
-                                        id: yoloModelChoice
+                                        id: visualModelChoice
                                         Layout.fillWidth: true
                                         visible: root.profile.yolo_enabled
                                         enabled: !root.controller.runActive
-                                        property var ready: (root.setup.models || []).filter(m => m.ready)
-                                        property var autoModel: ready.find(m => m.id === root.setup.auto)
+                                        property string detector: root.profile.visual_detector || "yolo"
+                                        property string option: ({ yolo: "yolo_model", dfine: "dfine_model", dfine_n: "dfine_n_model" })[detector]
+                                        property var mine: (root.setup.models || []).filter(m => m.detector === detector && !m.legacy)
+                                        property var ready: mine.filter(m => m.ready)
+                                        property var autoModel: ready.find(m => m.id === (root.setup.autos || {})[detector])
                                         property var ids: ["auto"].concat(ready.map(m => m.id))
-                                        model: ["Newest" + (autoModel ? " · " + autoModel.experiment + " " + autoModel.date : "")]
-                                               .concat(ready.map(m => m.experiment + " " + m.date))
-                                        currentIndex: Math.max(0, ids.indexOf(root.profile.yolo_model))
-                                        onActivated: (index) => root.controller.setOption("yolo_model", ids[index])
+                                        // Dates only; a name is added only when two models share a date.
+                                        function label(m) {
+                                            return ready.filter(o => o.date === m.date).length > 1 ? m.date + " · " + m.experiment : m.date
+                                        }
+                                        model: ["Newest" + (autoModel ? " (" + label(autoModel) + ")" : "")].concat(ready.map(m => label(m)))
+                                        currentIndex: Math.max(0, ids.indexOf(root.profile[option] || "auto"))
+                                        onActivated: (index) => root.controller.setOption(option, ids[index])
                                     }
                                     MutedText {
-                                        visible: root.profile.yolo_enabled && (root.setup.models || []).some(m => !m.ready && !m.legacy)
-                                        text: "Models without a TensorRT build for this GPU are in Setup & builds."
+                                        // Newer models of this detector that cannot run yet, and why.
+                                        property var pending: visualModelChoice.mine.filter(m => !m.ready && (!visualModelChoice.autoModel || m.date >= visualModelChoice.autoModel.date))
+                                        visible: root.profile.yolo_enabled && (pending.length > 0 || visualModelChoice.ready.length === 0)
+                                        Layout.fillWidth: true; wrapMode: Text.Wrap
+                                        color: "#E8C468"
+                                        text: {
+                                            if (pending.length === 0)
+                                                return "No " + root.visualName + " model yet: fetch one in Setup & builds."
+                                            return pending.map(m => {
+                                                const building = (root.setup.current_title || "").indexOf(m.id) >= 0
+                                                return m.date + (building ? ": building its TensorRT plan…"
+                                                    : (m.onnx_state !== "ok" ? ": needs an ONNX export" : ": needs a TensorRT plan")) 
+                                            }).join("\n") + "\n(Setup & builds › Visual models; it appears here when ready.)"
+                                        }
                                     }
 
                                     Rectangle { Layout.fillWidth: true; height: 1; color: "#263746" }
                                     Label { text: "Fusion"; color: "#67DFE7"; font.bold: true }
                                     MutedText {
                                         Layout.fillWidth: true; wrapMode: Text.Wrap
-                                        property var inputs: [root.profile.yolo_enabled ? "YOLO" : "", root.profile.mobilenetv2_enabled ? "MobileNetV2" : ""].filter(x => x)
-                                        text: inputs.length ? "EKF fuses " + inputs.join(" + ") + "." : "EKF has no input: turn on YOLO or MobileNetV2."
+                                        property var inputs: [root.profile.yolo_enabled ? root.visualName : "", root.profile.mobilenetv2_enabled ? "MobileNetV2" : ""].filter(x => x)
+                                        text: inputs.length ? "EKF fuses " + inputs.join(" + ") + "." : "EKF has no input: choose a visual detector or turn on MobileNetV2."
                                         color: inputs.length ? "#C8D7E0" : "#E8C468"
                                     }
                                     MutedText { text: "Raw camera and audio are always recorded."; }
@@ -1044,7 +1174,7 @@ ApplicationWindow {
                                         Layout.fillWidth: true
                                         enabled: !root.controller.runActive
                                         property var choices: [["ekf", "Fused direction (EKF)"], ["off", "Nothing (observe only)"]]
-                                            .concat(root.profile.yolo_enabled ? [["direct_yolo", "YOLO only"]] : [])
+                                            .concat(root.profile.yolo_enabled ? [["direct_yolo", root.visualName + " only"]] : [])
                                             .concat(root.profile.mobilenetv2_enabled ? [["direct_mobilenetv2", "MobileNetV2 only"]] : [])
                                             .concat(root.profile.ast_enabled ? [["direct_ast", "AST only"]] : [])
                                             .concat(root.profile.gre_enabled ? [["direct_gre", "GRE only"]] : [])
@@ -1508,6 +1638,61 @@ ApplicationWindow {
                                                     onClicked: root.controller.runJob(card.modelData.id)
                                                 }
                                             }
+                                            Repeater {
+                                                model: card.modelData.options || []
+                                                delegate: CheckBox {
+                                                    required property var modelData
+                                                    text: modelData.label
+                                                    checked: !!(card.modelData.option_values || {})[modelData.name]
+                                                    enabled: !card.running
+                                                    onToggled: root.controller.setJobOption(card.modelData.id, modelData.name, checked)
+                                                }
+                                            }
+                                            ColumnLayout {
+                                                id: fetchBox
+                                                property var fetch: root.setup.fetch || ({})
+                                                property bool running: card.running
+                                                visible: card.modelData.id === "yolo_fetch" && !!fetchBox.fetch.phase
+                                                Layout.fillWidth: true; spacing: 4
+                                                MutedText {
+                                                    Layout.fillWidth: true; elide: Text.ElideRight
+                                                    color: fetchBox.running ? "#67DFE7" : (fetchBox.fetch.failed ? "#FF8992" : "#5BD08A")
+                                                    text: {
+                                                        const f = fetchBox.fetch
+                                                        if (f.finished)
+                                                            return "Finished: " + f.added + " model(s) added, " + f.exported + " exported" + (f.failed ? ", " + f.failed + " failed (see Output)" : "")
+                                                        if (!fetchBox.running)
+                                                            return "Fetch stopped before finishing (see Output)"
+                                                        if (f.phase === "starting" || f.phase === "listing")
+                                                            return "Listing the Google Drive folder…"
+                                                        return (f.phase === "download" ? "Downloading " : "Exporting ") + (f.current || "")
+                                                    }
+                                                }
+                                                Repeater {
+                                                    model: [{ key: "download", label: "Downloaded" }, { key: "export", label: "Exported" }]
+                                                    delegate: RowLayout {
+                                                        id: barRow
+                                                        required property var modelData
+                                                        property var counts: fetchBox.fetch[modelData.key] || [0, 0]
+                                                        Layout.fillWidth: true; spacing: 10
+                                                        MutedText { text: barRow.modelData.label; Layout.preferredWidth: 90 }
+                                                        Rectangle {
+                                                            Layout.fillWidth: true; height: 8; radius: 4; color: "#0D1620"; border.color: "#1E2C39"
+                                                            Rectangle {
+                                                                height: parent.height; radius: 4; color: "#35C6D0"
+                                                                width: barRow.counts[1] > 0 ? parent.width * barRow.counts[0] / barRow.counts[1] : (fetchBox.fetch.finished ? parent.width : 0)
+                                                                Behavior on width { NumberAnimation { duration: 200 } }
+                                                            }
+                                                        }
+                                                        MutedText {
+                                                            Layout.preferredWidth: 70; horizontalAlignment: Text.AlignRight
+                                                            property var order: ["starting", "listing", "download", "export", "done"]
+                                                            // a phase with nothing to do shows "none new" once it has been reached
+                                                            text: barRow.counts[1] > 0 ? barRow.counts[0] + " / " + barRow.counts[1] : (order.indexOf(fetchBox.fetch.phase) >= order.indexOf(barRow.modelData.key) ? "none new" : "–")
+                                                        }
+                                                    }
+                                                }
+                                            }
                                             MutedText {
                                                 visible: card.expanded; Layout.fillWidth: true; wrapMode: Text.Wrap
                                                 text: card.modelData.description
@@ -1532,12 +1717,13 @@ ApplicationWindow {
                                         spacing: 6
                                         RowLayout {
                                             Layout.fillWidth: true
-                                            Label { text: "YOLO models"; color: "#EEF5F8"; font.bold: true }
+                                            Label { text: "Visual models (YOLO, D-FINE)"; color: "#EEF5F8"; font.bold: true }
                                             MutedText { text: root.setup.gpu ? "plans for " + root.setup.gpu : "no NVIDIA GPU: plans cannot be built here" }
                                             Item { Layout.fillWidth: true }
                                             MutedText {
-                                                text: root.setup.auto ? "Auto selects: " + root.setup.auto : (root.setup.auto_error || "")
-                                                color: root.setup.auto ? "#5BD08A" : "#E8C468"
+                                                property var autos: root.setup.autos || ({})
+                                                text: "Auto: " + [["yolo", "YOLO"], ["dfine", "D-FINE"], ["dfine_n", "D-FINE-N"]].map(d => d[1] + " " + (autos[d[0]] || "none ready")).join(" · ")
+                                                color: autos.yolo ? "#5BD08A" : "#E8C468"
                                             }
                                         }
                                         MutedText { Layout.fillWidth: true; wrapMode: Text.Wrap; text: "Checkpoint (.pt) → ONNX export (portable, models/yolo) → TensorRT plan built on this GPU (Isaac workspace). Plan builds take about 10 minutes on a Jetson Orin." }

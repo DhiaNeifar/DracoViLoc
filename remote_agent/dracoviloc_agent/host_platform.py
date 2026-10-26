@@ -121,3 +121,26 @@ def gpu_name() -> str:
     except OSError:
         pass
     return ""
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Shell access for the build scripts (standard library only, so it runs
+    with any python3):  host_platform.py {project-image ROOT | yolo-image | isaac-root}"""
+    import sys
+    args = sys.argv[1:] if argv is None else argv
+    if args[:1] == ["project-image"] and len(args) == 2:
+        versioned, latest = project_image_tags(Path(args[1]))
+        base = next((image for image in base_image_candidates() if _image_exists(image)), "")
+        print(versioned, latest, project_image_version(Path(args[1])), base or "-", sep="\n")
+    elif args == ["yolo-image"]:
+        print(resolve_yolo_image(AUTO))
+    elif args == ["isaac-root"]:
+        print(isaac_root())
+    else:
+        print(main.__doc__.split("\n", 1)[1].strip(), file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

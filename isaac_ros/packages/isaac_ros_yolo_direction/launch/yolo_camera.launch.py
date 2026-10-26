@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Start the USB camera, YOLO TensorRT inference, directions, and display."""
+"""Start the USB camera, visual detector TensorRT inference, directions, and display.
+
+detector:=yolo (default) runs the YOLO pipeline; detector:=dfine (also
+dfine_n, ...) runs the D-FINE pipeline. Both publish /detections_output and
+/yolov8_encoder/resize/camera_info, so everything downstream is shared.
+"""
 
 import os
 from pathlib import Path
@@ -14,10 +19,10 @@ from launch.actions import (
     OpaqueFunction,
     RegisterEventHandler,
 )
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -108,6 +113,7 @@ def generate_launch_description():
     num_blocks = LaunchConfiguration('num_blocks')
     direction_frame = LaunchConfiguration('direction_frame')
     use_viewer = LaunchConfiguration('use_viewer')
+    is_dfine = PythonExpression(["'", LaunchConfiguration('detector'), "'.startswith('dfine')"])
 
     inference = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
@@ -123,6 +129,24 @@ def generate_launch_description():
             'input_height': height,
             'num_blocks': num_blocks,
         }.items(),
+        condition=UnlessCondition(is_dfine),
+    )
+
+    dfine_inference = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(
+            get_package_share_directory('isaac_ros_yolo_bringup'),
+            'launch',
+            'dfine_video_inference.launch.py',
+        )),
+        launch_arguments={
+            'model_path': model_path,
+            'engine_path': engine_path,
+            'input_width': width,
+            'input_height': height,
+            'num_blocks': num_blocks,
+            'confidence_threshold': LaunchConfiguration('confidence_threshold'),
+        }.items(),
+        condition=IfCondition(is_dfine),
     )
 
     direction = Node(
@@ -154,6 +178,14 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument(
+            'detector', default_value='yolo',
+            description='yolo, or dfine / dfine_n for a D-FINE model',
+        ),
+        DeclareLaunchArgument(
+            'confidence_threshold', default_value='0.5',
+            description='D-FINE only; YOLO uses its decoder default',
+        ),
+        DeclareLaunchArgument(
             'camera',
             default_value='auto',
             description='Video device path, or auto to select the icSpring array camera',
@@ -178,6 +210,7 @@ def generate_launch_description():
             default_value='/workspaces/isaac_ros-dev/models/drone_yolo11n_best.plan',
         ),
         inference,
+        dfine_inference,
         direction,
         visualizer,
         viewer,

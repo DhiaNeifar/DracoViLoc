@@ -1,0 +1,25 @@
+{
+  "source": "par_yolo11n_20261024_best.pt",
+  "source_sha256": "24988258d1a19daecdf0e6e64c381c75e4efada4f865044e9bcf14ef4648ddb3",
+  "onnx_sha256": "147428568d0d3e80ac89f3270fb0c406793ae65496d4bcecd616281a03de0a10",
+  "exported_at": "2026-10-26T06:53:15+00:00",
+  "imgsz": 640,
+  "ultralytics": "8.4.129",
+  "torch": "2.5.1",
+  "onnx": "1.23.2",
+  "inputs": {
+    "images": [
+      1,
+      3,
+      640,
+      640
+    ]
+  },
+  "outputs": {
+    "output0": [
+      1,
+      5,
+      8400
+    ]
+  }
+}

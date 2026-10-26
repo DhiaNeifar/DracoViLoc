@@ -66,7 +66,19 @@ def test_deploy_dry_run_is_parsed_with_destinations(tmp_path, monkeypatch):
 def test_every_job_has_a_runnable_command():
     root = Path(__file__).resolve().parents[2]
     for job in jobs.JOBS:
-        if job.id in {"project_image", "isaac_build"}:
-            continue  # need Docker to resolve images
-        command = job.command(root)
+        command = job.command(root, **job.option_values())
         assert command and all(isinstance(part, str) for part in command)
+        if command[0] != "git" and job.id != "yolo_model":
+            assert command[0].startswith(str(root / "scripts")), job.id
+            assert os.access(command[0], os.X_OK), command[0]
+
+
+def test_job_options_default_and_saved_values():
+    job = jobs.JOBS_BY_ID["yolo_fetch"]
+    assert job.option_values() == {"export": True}
+    assert job.option_values({"export": False, "unknown": True}) == {"export": False}
+    root = Path("/repo")
+    assert job.command(root, export=True)[-1] == "--gui"
+    assert job.command(root, export=False)[-1] == "--no-export"
+    assert jobs.describe(job, jobs.JobStatus(jobs.OK, ""))["options"] == [
+        {"name": "export", "label": "Export new models to ONNX after fetching"}]

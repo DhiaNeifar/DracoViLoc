@@ -72,6 +72,7 @@ def main() -> int:
     engine.load(QUrl.fromLocalFile(str(qml)))
     if not engine.rootObjects():
         return 2
+    controller.set_host_window(engine.rootObjects()[0])
     return app.exec()
 
 

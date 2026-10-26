@@ -227,6 +227,47 @@ class RosBridge:
                 callback(False, str(exc))
         future.add_done_callback(complete)
 
+    def set_parameters(self, node: str, values: dict[str, bool | float | int | str],
+                       callback: Callable[[bool, str], None]) -> None:
+        """Set parameters on a running node (e.g. arrow visibility)."""
+        try:
+            from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+            from rcl_interfaces.srv import SetParameters
+        except ImportError as exc:
+            callback(False, str(exc))
+            return
+        if self._node is None:
+            callback(False, "ROS is not running")
+            return
+        clients = self.__dict__.setdefault("_parameter_clients", {})
+        client = clients.get(node) or clients.setdefault(
+            node, self._node.create_client(SetParameters, f"{node}/set_parameters"))
+        if not client.service_is_ready():
+            callback(False, f"{node} is not running")
+            return
+        request = SetParameters.Request()
+        for name, value in values.items():
+            parameter = ParameterValue()
+            if isinstance(value, bool):
+                parameter.type, parameter.bool_value = ParameterType.PARAMETER_BOOL, value
+            elif isinstance(value, int):
+                parameter.type, parameter.integer_value = ParameterType.PARAMETER_INTEGER, value
+            elif isinstance(value, float):
+                parameter.type, parameter.double_value = ParameterType.PARAMETER_DOUBLE, value
+            else:
+                parameter.type, parameter.string_value = ParameterType.PARAMETER_STRING, str(value)
+            request.parameters.append(Parameter(name=name, value=parameter))
+        future = client.call_async(request)
+
+        def complete(done):
+            try:
+                results = done.result().results
+                failed = [r.reason for r in results if not r.successful]
+                callback(not failed, "; ".join(failed) or "ok")
+            except Exception as exc:
+                callback(False, str(exc))
+        future.add_done_callback(complete)
+
     def request_home(self, callback: Callable[[bool, str], None]) -> None:
         try:
             from std_srvs.srv import Trigger

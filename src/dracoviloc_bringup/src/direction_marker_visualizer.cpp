@@ -26,6 +26,15 @@ public:
       throw std::invalid_argument("marker_timeout must be finite and positive");
     }
 
+    // Every arrow is also published on one topic for the control center's 3D
+    // view; each can be hidden live with the parameter show_<name>.
+    arrows_ = create_publisher<Marker>("/dracoviloc/arrows", rclcpp::QoS(50).reliable());
+    add_source(
+      "yolo_enabled", "/yolo/direction",
+      "/yolo/arrow_marker", "yolo_target", 0.20, 0.55, 1.00);
+    add_source(
+      "ast_enabled", "/ast/direction",
+      "/ast/target_marker", "ast_target", 0.92, 0.92, 0.92);
     add_source(
       "mobilenetv2_enabled", "/mobilenetv2/direction",
       "/mobilenetv2/target_marker", "mobilenetv2_target", 0.95, 0.10, 0.85);
@@ -39,6 +48,22 @@ public:
 
     timer_ = create_wall_timer(
       std::chrono::milliseconds(100), [this]() {expire_stale_markers();});
+    parameter_callback_ = add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter> & parameters) {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        for (const auto & parameter : parameters) {
+          for (const auto & source : sources_) {
+            if (parameter.get_name() == "show_" + source->name) {
+              source->shown = parameter.as_bool();
+              if (!source->shown) {
+                delete_marker(*source);
+              }
+            }
+          }
+        }
+        return result;
+      });
   }
 
 private:
@@ -48,6 +73,8 @@ private:
 
   struct Source
   {
+    std::string name;  // yolo, mobilenetv2, ekf, ... (parameter show_<name>)
+    bool shown{true};
     std::string marker_namespace;
     float red;
     float green;
@@ -65,6 +92,8 @@ private:
       return;
     }
     auto source = std::make_shared<Source>();
+    source->name = "first_arrival";
+    source->shown = declare_parameter("show_first_arrival", true);
     source->marker_namespace = "first_arrival_target";
     source->red = 0.10;
     source->green = 1.00;
@@ -98,6 +127,8 @@ private:
     }
 
     auto source = std::make_shared<Source>();
+    source->name = enabled_parameter.substr(0, enabled_parameter.rfind("_enabled"));
+    source->shown = declare_parameter("show_" + source->name, true);
     source->marker_namespace = marker_namespace;
     source->red = red;
     source->green = green;
@@ -148,6 +179,9 @@ private:
     marker.color.a = 1.0;
     marker.lifetime = rclcpp::Duration::from_seconds(timeout_);
     source.publisher->publish(marker);
+    if (source.shown) {
+      arrows_->publish(marker);
+    }
 
     source.last_frame = direction.header.frame_id;
     source.last_received = now();
@@ -161,20 +195,33 @@ private:
       if (!source->visible || (current_time - source->last_received).seconds() <= timeout_) {
         continue;
       }
-      Marker marker;
-      marker.header.stamp = current_time;
-      marker.header.frame_id = source->last_frame;
-      marker.ns = source->marker_namespace;
-      marker.id = 0;
-      marker.action = Marker::DELETE;
-      source->publisher->publish(marker);
+      delete_marker(*source);
+      source->publisher->publish(deletion(*source));
       source->visible = false;
     }
+  }
+
+  Marker deletion(const Source & source)
+  {
+    Marker marker;
+    marker.header.stamp = now();
+    marker.header.frame_id = source.last_frame.empty() ? "world" : source.last_frame;
+    marker.ns = source.marker_namespace;
+    marker.id = 0;
+    marker.action = Marker::DELETE;
+    return marker;
+  }
+
+  void delete_marker(const Source & source)
+  {
+    arrows_->publish(deletion(source));
   }
 
   double arrow_length_;
   double timeout_;
   std::vector<std::shared_ptr<Source>> sources_;
+  rclcpp::Publisher<Marker>::SharedPtr arrows_;
+  OnSetParametersCallbackHandle::SharedPtr parameter_callback_;
   rclcpp::Subscription<FirstArrival>::SharedPtr first_arrival_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };

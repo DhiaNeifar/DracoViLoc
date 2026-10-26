@@ -275,11 +275,13 @@ def _configure_pipeline(context):
                               "first_arrival_evidence_ttl_s": LaunchConfiguration(
                                   "first_arrival_evidence_ttl_s")}.items()))
 
-    if mobilenetv2_enabled or gre_enabled or fusion_enabled:
+    if yolo_enabled or audio_enabled or fusion_enabled:
         actions.append(Node(
             package="dracoviloc_bringup",
             executable="direction_marker_visualizer",
             parameters=[{
+                "yolo_enabled": yolo_enabled,
+                "ast_enabled": ast_enabled,
                 "mobilenetv2_enabled": mobilenetv2_enabled,
                 "gre_enabled": gre_enabled,
                 "ekf_enabled": fusion_enabled,

@@ -30,6 +30,11 @@ SSS_SST_PUBLISHER_DEPTH = 32
 
 # Paired SSS/SST session policy (report section 7).
 SESSION_INVALIDATE_TIMEOUT = 0.5
+# The core exits whenever a sink socket is closed, which is how an invalidated
+# SSS/SST session is reset (e.g. after the bridge lagged under start-up load).
+# It is restarted up to this many times per window before giving up.
+CORE_RESTART_LIMIT = 5
+CORE_RESTART_WINDOW_S = 60.0
 MAX_CONSECUTIVE_PAIR_VIOLATIONS = 3
 MAX_PENDING_PAIRS = 64
 SST_TIMEOUT = 0.25
@@ -521,7 +526,7 @@ class SocketServer(ABC):
         self._server_socket.settimeout(0.1)
 
         self._thread = threading.Thread(
-            target=self._run, name='{}_port_{}'.format(self._stream_name, port))
+            target=self._run, name='{}_port_{}'.format(self._stream_name, port), daemon=True)
         self._is_stopped = True
 
     def _bump(self, name: str, amount: int = 1):
@@ -557,6 +562,12 @@ class SocketServer(ABC):
                 client_socket.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
+        try:
+            # Wakes a thread blocked in accept(); close() alone does not on
+            # Linux, which left the port listening after a core failure.
+            self._server_socket.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         self._server_socket.close()
         self._thread.join(timeout=3.0)
         if self._thread.is_alive():
@@ -1163,6 +1174,24 @@ class OdasServerNode(rclpy.node.Node):
         returncode = self._core_process.poll()
         if returncode is None or self._core_failure_reported:
             return
+        now = time.monotonic()
+        restarts = [t for t in getattr(self, '_core_restart_times', []) if now - t < CORE_RESTART_WINDOW_S]
+        if len(restarts) < CORE_RESTART_LIMIT:
+            restarts.append(now)
+            self._core_restart_times = restarts
+            description = self._describe_returncode(returncode)
+            self.get_logger().warning(
+                'ODAS core exited ({}); restarting it (restart {}/{} within {:.0f} s). '
+                'The sockets stay open, so a new SSS/SST session starts when it reconnects.'.format(
+                    description, len(restarts), CORE_RESTART_LIMIT, CORE_RESTART_WINDOW_S))
+            self.record_diagnostic_event(
+                'core_restarted', returncode=returncode, description=description,
+                restarts_in_window=len(restarts))
+            output_thread = getattr(self, '_core_output_thread', None)
+            if output_thread is not None:
+                output_thread.join(timeout=2.0)
+            self._start_core_process()
+            return
         self._core_failure_reported = True
         self._unexpected_core_returncode = returncode
         description = self._describe_returncode(returncode)
@@ -1174,8 +1203,10 @@ class OdasServerNode(rclpy.node.Node):
         self.record_diagnostic_event(
             'core_failed', returncode=returncode, description=description,
             uptime_s=round(time.monotonic() - self._started_monotonic, 3))
-        if rclpy.ok():
-            rclpy.shutdown()
+        # Ask run() to stop. Calling rclpy.shutdown() from inside this timer
+        # callback left rclpy.spin() hung, so the bridge never closed its
+        # sockets and kept ports 9000/9001/10000 open.
+        self._shutdown_requested = True
 
     def _log_health(self):
         core_returncode = None if self._core_process is None else self._core_process.poll()
@@ -1336,7 +1367,9 @@ class OdasServerNode(rclpy.node.Node):
             self._core_monitor_timer = self.create_timer(0.5, self._check_core_process)
             self._health_timer = self.create_timer(
                 self._diagnostics_interval_s, self._log_health)
-            rclpy.spin(self)
+            self._shutdown_requested = False
+            while rclpy.ok() and not self._shutdown_requested:
+                rclpy.spin_once(self, timeout_sec=0.2)
         finally:
             self._stopping = True
             if self._raw_socket_server:

@@ -3,17 +3,18 @@ from __future__ import annotations
 import functools
 import json
 import shlex
+import sys
 import re
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Property, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QFileSystemWatcher, QObject, Property, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtCore import QUrl
 
-from . import docker_control, jobs, process_control
+from . import docker_control, jobs, process_control, x11_windows
 from .commands import runtime_environment, sourced_host_command, yolo_docker_command
 from .models import AppState, LogEvent, RunProfile
 from .preflight import blocking_failures, run_preflight
@@ -26,7 +27,8 @@ from .session_log import SessionLog
 from .terminal import TerminalHub, TerminalModel, severity_of, split_line, strip_ansi
 from .units import UnitSupervisor
 from .validation import validate_profile
-from .yolo_models import Registry
+from .yolo_models import FAMILIES as MODEL_FAMILIES
+from .yolo_models import DETECTOR_NAMES, Registry, list_all, resolve_detector
 
 
 def audited(slot):
@@ -55,6 +57,8 @@ class AppController(QObject):
     processesChanged = Signal()
     setupChanged = Signal()
     processListChanged = Signal()
+    rvizWindowChanged = Signal()
+    _rvizWindowFound = Signal(int)
     robotCheckChanged = Signal()
     _jobQueueReady = Signal()
 
@@ -91,12 +95,28 @@ class AppController(QObject):
         self._operator_stopped: set[str] = set()
         self._process_list: dict = {"items": [], "report": [], "scanning": False}
         self._robot_check: dict = {}
+        self._rviz_window = 0        # embedded X11 window id, 0 = none
+        self._rviz_status = "Starts with the run"
+        self._rviz_area = (0, 0, 1, 1, False)  # panel rectangle in the GUI window (logical px)
+        self._host_window = None     # the GUI's QQuickWindow, set by main.py
+        self._embedder = None
+        # Arrows shown in the 3D view (direction_marker_visualizer show_<name>).
+        self._arrows = {"yolo": True, "mobilenetv2": True, "ast": True, "gre": True, "ekf": True}
+        self._rvizWindowFound.connect(self._embed_rviz, Qt.QueuedConnection)
         self._setup: dict[str, dict] = {}
         self._models: dict = {"models": [], "gpu": "", "auto": "", "auto_error": ""}
+        self._fetch_progress: dict = {}  # last PROGRESS line of the Drive fetch job
+        self._job_options_path = Path.home() / ".config/dracoviloc-gui/job_options.json"
+        try:
+            self._job_options: dict[str, dict] = json.loads(self._job_options_path.read_text())
+        except (OSError, ValueError):
+            self._job_options = {}
         self._job_queue: list[str] = []
         self._current_job = next(
             (name[len("job-"):] for name in self.processes.running() if name.startswith("job-")), "")
         self._checking_setup = False
+        self._current_job_title = ""
+        self._watch_models()
         # Jobs are started on the GUI thread even when a worker thread decides
         # the next one should run (terminal models belong to this thread).
         self._jobQueueReady.connect(self._start_next_job, Qt.QueuedConnection)
@@ -157,12 +177,15 @@ class AppController(QObject):
     @Property(str, notify=setupChanged)
     def setupJson(self) -> str:
         return json.dumps({
-            "jobs": [self._setup.get(job.id, jobs.describe(job, jobs.JobStatus(jobs.UNKNOWN, "Not checked yet")))
+            "jobs": [{**self._setup.get(job.id, jobs.describe(job, jobs.JobStatus(jobs.UNKNOWN, "Not checked yet"))),
+                      "option_values": job.option_values(self._job_options.get(job.id))}
                      for job in jobs.JOBS],
             "current": self._current_job, "queue": self._job_queue,
+            "current_title": self._current_job_title if self._current_job else "",
             "checking": self._checking_setup,
             "images_directory": str(self.project_root / "images"),
             "saved_images": sorted(path.name for path in (self.project_root / "images").glob("*.tar.gz")),
+            "fetch": self._fetch_progress,
             **self._models,
         })
 
@@ -170,7 +193,7 @@ class AppController(QObject):
     def jobActive(self) -> bool:
         return bool(self._current_job)
 
-    TOOL_UNITS = {"rviz"}  # helpers that may run with or without a run
+    TOOL_UNITS = {"rviz", "rviz_window"}  # helpers that may run with or without a run
 
     def _run_processes(self) -> list[str]:
         """Running subsystem units; setup jobs and tools are not part of a run."""
@@ -211,6 +234,8 @@ class AppController(QObject):
 
     def _process_lines(self, name: str, lines: list[str]) -> None:
         """Called from the tail thread; the full output is already on disk."""
+        if name == "job-yolo_fetch":
+            lines = self._take_fetch_progress(lines)
         self.terminals.linesArrived.emit(name, lines)
         for line in lines:
             text = strip_ansi(split_line(line)[1])
@@ -218,6 +243,21 @@ class AppController(QObject):
             if severity != "info":
                 event = LogEvent(datetime.now().isoformat(timespec="seconds"), name, severity, text)
                 self.logAdded.emit(json.dumps(event.to_dict()))
+
+    def _take_fetch_progress(self, lines: list[str]) -> list[str]:
+        """Turn the fetch job's PROGRESS lines into progress bars; keep the rest."""
+        shown = []
+        for line in lines:
+            text = strip_ansi(split_line(line)[1])
+            if not text.startswith("PROGRESS "):
+                shown.append(line)
+                continue
+            try:
+                self._fetch_progress = json.loads(text[len("PROGRESS "):])
+            except ValueError:
+                continue
+            self.setupChanged.emit()
+        return shown
 
     def _process_exited(self, name: str, code: int) -> None:
         if name.startswith("job-"):
@@ -230,6 +270,8 @@ class AppController(QObject):
                       if name in self._operator_stopped else "The host launch exited unexpectedly.")
             self._set_state(AppState.FAULT, reason)
         self._operator_stopped.discard(name)
+        if name == "rviz":
+            self._rvizWindowFound.emit(0)
         if not self._run_processes() and self.session.run_directory is not None and \
                 self._state not in {AppState.SHUTTING_DOWN, AppState.STARTING_YOLO, AppState.STARTING_HOST}:
             self.session.end_run(f"{name} exited (code {code})")
@@ -502,10 +544,12 @@ class AppController(QObject):
     def _start_pipeline(self) -> None:
         env = runtime_environment()
         model = None
+        detector = self._profile.visual_detector
+        detector_name = DETECTOR_NAMES.get(detector, detector)
         if self._profile.yolo_enabled:
             try:
-                registry = Registry(self.project_root)
-                model = registry.resolve(self._profile.yolo_model)
+                registry, model = resolve_detector(
+                    self.project_root, detector, self._profile.visual_model_choice())
             except LookupError as exc:
                 self._set_state(AppState.FAULT, str(exc))
                 return
@@ -513,15 +557,18 @@ class AppController(QObject):
         commands = {"host": sourced_host_command(self.project_root, self._profile, run_directory)}
         if model is not None:
             paths = registry.container_paths(model.id, model.legacy)
-            self._log("yolo", "info", f"YOLO model: {model.id} ({model.plan_detail})")
+            self._log("yolo", "info", f"{detector_name} model: {model.id} ({model.plan_detail})")
             commands["yolo"] = yolo_docker_command(self.project_root, self._profile, paths)
-        self.session.record_run(self._profile.to_dict(), commands,
-                                {"yolo_model": model.id if model else None})
+        self.session.record_run(self._profile.to_dict(), commands, {
+            "visual_detector": detector if model else None,
+            "visual_model": model.id if model else None,
+            "yolo_model": model.id if model else None,  # kept for older readers
+        })
         self.session.event("run", "gui", "info", "Run starting",
                            {"profile": self._profile.name, "run": str(run_directory)})
         try:
             if self._profile.yolo_enabled:
-                self._set_state(AppState.STARTING_YOLO, "Starting the YOLO container…")
+                self._set_state(AppState.STARTING_YOLO, f"Starting the {detector_name} container…")
                 if docker_control.remove_if_stopped():
                     self._log("yolo", "info", "Removed stopped stale isaac_yolo container")
                 self.processes.start("yolo", commands["yolo"], self.project_root, env)
@@ -538,6 +585,11 @@ class AppController(QObject):
             self._set_state(AppState.STARTING_HOST, "Starting the DracoViLoc host stack…")
             self.processes.start("host", commands["host"], self.project_root, env)
             self._set_state(AppState.READY, "Run active. Motion remains disabled.")
+            if self._profile.use_rviz:
+                self._start_embedded_rviz()
+            # Re-apply the arrow choices once the arrow node is up.
+            threading.Thread(target=lambda: [time.sleep(delay) or self._apply_arrows()
+                                             for delay in (3.0, 7.0)], daemon=True).start()
         except Exception as exc:
             self._log("supervisor", "error", str(exc))
             self._set_state(AppState.FAULT, str(exc))
@@ -783,17 +835,57 @@ class AppController(QObject):
         threading.Thread(target=work, daemon=True).start()
 
     def _scan_models(self) -> dict:
+        """Models of every family plus the model 'auto' picks for each detector."""
         try:
             registry = Registry(self.project_root)
-            models = registry.list()
+            models = list_all(self.project_root, gpu=registry.gpu, workspace=registry.workspace)
         except Exception as exc:
-            return {"models": [], "gpu": "", "auto": "", "auto_error": f"Model scan failed: {exc}"}
-        try:
-            auto, auto_error = registry.resolve("auto", models).id, ""
-        except LookupError as exc:
-            auto, auto_error = "", str(exc)
+            return {"models": [], "gpu": "", "auto": "", "autos": {},
+                    "auto_error": f"Model scan failed: {exc}"}
+        autos, errors = {}, {}
+        for detector in DETECTOR_NAMES:
+            try:
+                autos[detector] = registry.resolve("auto", models, detector=detector).id
+            except LookupError as exc:
+                autos[detector], errors[detector] = "", str(exc)
         return {"models": [model.to_dict() for model in models], "gpu": registry.gpu,
-                "auto": auto, "auto_error": auto_error}
+                "auto": autos["yolo"], "auto_error": errors.get("yolo", ""),
+                "autos": autos, "auto_errors": errors}
+
+    def _watch_models(self) -> None:
+        """Re-scan the model lists whenever a checkpoint, ONNX file or plan
+        appears or changes, whoever made it (GUI job or terminal)."""
+        folders = [self.project_root / "models" / folder for folder, _, _ in MODEL_FAMILIES.values()]
+        folders.append(Registry(self.project_root, gpu="", image="").staged)
+        for folder in folders:
+            folder.mkdir(parents=True, exist_ok=True)
+        self._model_watcher = QFileSystemWatcher([str(folder) for folder in folders], self)
+        self._model_rescan = QTimer(self, singleShot=True, interval=1500)  # files arrive in bursts
+        self._model_watcher.directoryChanged.connect(lambda _path: self._model_rescan.start())
+        self._model_rescan.timeout.connect(self._refresh_models)
+
+    def _refresh_models(self) -> None:
+        def work():
+            self._models = self._scan_models()
+            self.setupChanged.emit()
+        threading.Thread(target=work, daemon=True).start()
+
+    @Slot(str, str, bool)
+    @audited
+    def setJobOption(self, job_id: str, name: str, value: bool) -> None:
+        job = jobs.JOBS_BY_ID.get(job_id)
+        if job is None or name not in job.options:
+            return
+        self._job_options.setdefault(job_id, {})[name] = bool(value)
+        try:
+            self._job_options_path.parent.mkdir(parents=True, exist_ok=True)
+            self._job_options_path.write_text(json.dumps(self._job_options, indent=2) + "\n")
+        except OSError as exc:
+            self._log("setup", "warning", f"Could not save job options: {exc}")
+        self.setupChanged.emit()
+
+    def _job_command(self, job: jobs.Job) -> list[str]:
+        return job.command(self.project_root, **job.option_values(self._job_options.get(job.id)))
 
     @Slot(str)
     @audited
@@ -827,6 +919,8 @@ class AppController(QObject):
             return False
         self._current_job = job_id
         self._current_job_title = title
+        if job_id == "yolo_fetch":
+            self._fetch_progress = {"phase": "starting"}
         self.terminals.model(f"job-{job_id}")
         self._set_message(f"{title} running… (output below and in Logs)")
         self.setupChanged.emit()
@@ -839,7 +933,7 @@ class AppController(QObject):
         if job is None:
             return
         self._job_queue = []
-        self._start_job(job.id, job.title, job.command(self.project_root), job.stop_timeout_s)
+        self._start_job(job.id, job.title, self._job_command(job), job.stop_timeout_s)
 
     @Slot()
     @audited
@@ -866,7 +960,7 @@ class AppController(QObject):
             job = jobs.JOBS_BY_ID[self._job_queue.pop(0)]
             if not self._needs_run(job.id):
                 continue
-            if self._start_job(job.id, job.title, job.command(self.project_root), job.stop_timeout_s):
+            if self._start_job(job.id, job.title, self._job_command(job), job.stop_timeout_s):
                 self.setupChanged.emit()
                 return
             self._job_queue = []
@@ -960,7 +1054,7 @@ class AppController(QObject):
                 self.processListChanged.emit()
         threading.Thread(target=work, daemon=True).start()
 
-    RESTARTABLE = {"yolo", "rviz"}  # the host stack restarts as a new run
+    RESTARTABLE = {"yolo", "rviz", "rviz_window"}  # the host stack restarts as a new run
 
     def _restart_commands(self) -> dict[str, list[str]]:
         return {unit["name"]: unit.get("command") for unit in self.processes.snapshot()
@@ -1040,23 +1134,166 @@ class AppController(QObject):
             self.refreshProcesses()
         threading.Thread(target=work, daemon=True).start()
 
+    def _rviz_command(self, embedded: bool) -> list[str]:
+        script = ("source /opt/ros/humble/setup.bash && "
+                  f"source {shlex.quote(str(self.project_root / 'install/setup.bash'))} && exec \"$@\"")
+        return ["/bin/bash", "-lc", script, "dracoviloc-gui", "ros2", "launch",
+                "dracoviloc_bringup", "rviz.launch.py",
+                f"dual_arm:={'true' if self._profile.dual_arm else 'false'}",
+                f"embedded:={'true' if embedded else 'false'}"]
+
     @Slot()
     @audited
     def openRviz(self) -> None:
-        if self.processes.is_running("rviz"):
+        """Full RViz (all panels) in its own window."""
+        if self.processes.is_running("rviz_window"):
             self._set_message("RViz is already open.")
             return
-        script = ("source /opt/ros/humble/setup.bash && "
-                  f"source {shlex.quote(str(self.project_root / 'install/setup.bash'))} && exec \"$@\"")
-        command = ["/bin/bash", "-lc", script, "dracoviloc-gui", "ros2", "launch",
-                   "dracoviloc_bringup", "rviz.launch.py",
-                   f"dual_arm:={'true' if self._profile.dual_arm else 'false'}"]
         try:
-            self.processes.start("rviz", command, self.project_root, runtime_environment(), 10.0)
+            self.processes.start("rviz_window", self._rviz_command(False), self.project_root,
+                                 runtime_environment(), 10.0)
             self._set_message("RViz started.")
         except Exception as exc:
             self._set_message(f"RViz could not start: {exc}")
         self.refreshProcesses()
+
+    # ----------------------------------------------------------- 3D view
+    @Property(str, notify=rvizWindowChanged)
+    def arrowsJson(self) -> str:
+        return json.dumps(self._arrows)
+
+    @Slot(str, bool)
+    @audited
+    def setArrowVisible(self, name: str, shown: bool) -> None:
+        if name not in self._arrows:
+            return
+        self._arrows[name] = bool(shown)
+        self.rvizWindowChanged.emit()
+        self._apply_arrows()
+
+    def _apply_arrows(self) -> None:
+        def done(ok: bool, message: str) -> None:
+            if not ok and self._run_processes():
+                self._log("rviz", "warning", f"Arrow visibility not applied yet: {message}")
+        running = {"ekf": True, "yolo": self._profile.yolo_enabled,
+                   "mobilenetv2": self._profile.mobilenetv2_enabled,
+                   "ast": self._profile.ast_enabled, "gre": self._profile.gre_enabled}
+        self.ros.set_parameters("/direction_marker_visualizer",
+                                {f"show_{name}": shown for name, shown in self._arrows.items()
+                                 if running[name]}, done)
+
+    @Property(bool, notify=rvizWindowChanged)
+    def rvizEmbedded(self) -> bool:
+        return bool(self._rviz_window)
+
+    def set_host_window(self, window) -> None:
+        """main.py: the window RViz is embedded into."""
+        self._host_window = window
+
+    @Slot(float, float, float, float, bool)
+    def setRvizArea(self, x: float, y: float, width: float, height: float, visible: bool) -> None:
+        """QML: where the 3D panel is, and whether RViz may be drawn now."""
+        self._rviz_area = (x, y, width, height, visible)
+        self._place_rviz()
+
+    def _physical_area(self) -> tuple[int, int, int, int, bool]:
+        ratio = self._host_window.devicePixelRatio() if self._host_window is not None else 1.0
+        x, y, width, height, visible = self._rviz_area
+        return (round(x * ratio), round(y * ratio), round(width * ratio), round(height * ratio),
+                visible and width > 20 and height > 20)
+
+    def _place_rviz(self) -> None:
+        if self._rviz_window and self._embedder is not None:
+            try:
+                self._embedder.place(self._rviz_window, *self._physical_area())
+            except Exception as exc:
+                self._log("rviz", "warning", f"Could not place the 3D view: {exc}")
+
+    @Property(str, notify=rvizWindowChanged)
+    def rvizStatus(self) -> str:
+        return self._rviz_status
+
+    def _set_rviz_status(self, text: str) -> None:
+        self._rviz_status = text
+        self.rvizWindowChanged.emit()
+
+    @Slot(bool)
+    @audited
+    def setThreeDView(self, on: bool) -> None:
+        """Dashboard switch: show or remove the embedded RViz (also saved in the profile)."""
+        self._profile.use_rviz = bool(on)
+        self.profileChanged.emit()
+        if not on:
+            self._rvizWindowFound.emit(0)
+            if self.processes.is_running("rviz"):
+                threading.Thread(target=lambda: self.processes.stop("rviz", 10.0), daemon=True).start()
+            self._set_rviz_status("3D view is off")
+        elif self._run_processes():
+            self._start_embedded_rviz()
+        else:
+            self._set_rviz_status("Starts with the run")
+
+    def _start_embedded_rviz(self) -> None:
+        if not x11_windows.available():
+            self._set_rviz_status("The 3D view needs an X11 desktop session")
+            return
+        if not self.processes.is_running("rviz"):
+            try:
+                self.processes.start("rviz", self._rviz_command(True), self.project_root,
+                                     runtime_environment(), 10.0)
+            except Exception as exc:
+                self._set_rviz_status(f"RViz could not start: {exc}")
+                return
+        self._set_rviz_status("Starting RViz…")
+
+        def find():
+            # RViz's main window is titled "<config> - RViz"; its splash screen
+            # is not, and must not be embedded. Keep watching afterwards: if the
+            # embedded window goes away while RViz runs, embed the new one.
+            embedded = 0
+            deadline = time.monotonic() + 60.0
+            while self.processes.is_running("rviz") and self._profile.use_rviz:
+                if embedded and x11_windows.exists(embedded):
+                    time.sleep(2.0)
+                    continue
+                pids = set(self.processes.systemd.unit_processes("dracoviloc-rviz.service"))
+                window = x11_windows.find_window(pids, "RViz") if pids else None
+                if window:
+                    embedded = window
+                    self._rvizWindowFound.emit(window)
+                    deadline = time.monotonic() + 60.0
+                elif not embedded and time.monotonic() > deadline:
+                    self._set_rviz_status("RViz started but its window was not found")
+                    return
+                time.sleep(0.5)
+        threading.Thread(target=find, daemon=True).start()
+
+    def _embed_rviz(self, window_id: int) -> None:
+        """GUI thread: put RViz's X11 window into the 3D panel (0 = it is gone)."""
+        if self._rviz_window and self._embedder is not None:
+            self._embedder.forget(self._rviz_window)
+        self._rviz_window = 0
+        if window_id:
+            if self._host_window is None:
+                self._rviz_status = "No GUI window to embed RViz into"
+            else:
+                try:
+                    from .x11_embed import X11Embedder
+                    if self._embedder is None:
+                        self._embedder = X11Embedder()
+                    x, y, width, height, visible = self._physical_area()
+                    self._embedder.embed(window_id, int(self._host_window.winId()), x, y, width, height)
+                    self._rviz_window = window_id
+                    self._place_rviz()  # hide it right away if the panel is not on screen
+                    self._rviz_status = ""
+                    self.session.event("process", "rviz", "info",
+                                       f"Embedded RViz window {hex(window_id)} in the 3D panel")
+                except Exception as exc:
+                    self._rviz_status = f"Could not embed RViz: {exc}"
+                    self._log("rviz", "error", self._rviz_status)
+        elif self._profile.use_rviz:
+            self._rviz_status = "Starts with the run"
+        self.rvizWindowChanged.emit()
 
     @Slot()
     @audited

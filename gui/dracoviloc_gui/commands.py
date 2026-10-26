@@ -4,7 +4,7 @@ import os
 import shlex
 from pathlib import Path
 
-from .host_platform import resolve_yolo_image
+from .host_platform import isaac_root, resolve_yolo_image
 from .jobs import container_user_args
 from .models import RunProfile
 
@@ -54,7 +54,9 @@ def host_launch_arguments(profile: RunProfile) -> list[str]:
         "mobilenetv2_vote_window": profile.mobilenetv2_vote_window,
         "fusion_enabled": profile.fusion_enabled,
         "tracking_mode": profile.tracking_mode,
-        "use_rviz": profile.use_rviz,
+        # The GUI shows RViz itself (embedded 3D view or its own unit), so the
+        # host launch never opens a separate RViz window.
+        "use_rviz": False,
         "use_moveit": profile.use_moveit,
         "recording_enabled": profile.recording_enabled,
         "recording_root": Path(profile.recording_root).expanduser(),
@@ -99,12 +101,14 @@ def sourced_host_command(project_root: Path, profile: RunProfile,
 
 def yolo_docker_command(project_root: Path, profile: RunProfile,
                         model_paths: tuple[str, str] | None = None) -> list[str]:
-    """model_paths: (onnx, plan) container paths of the resolved YOLO model."""
+    """model_paths: (onnx, plan) container paths of the resolved model of the
+    profile's visual detector (YOLO or D-FINE)."""
     del project_root  # The Isaac workspace is an external runtime workspace.
     model_path, engine_path = model_paths or (profile.yolo_model_path, profile.yolo_engine_path)
     ros_command = [
         "ros2", "launch", "isaac_ros_yolo_direction", "yolo_camera.launch.py",
         _arg("camera", profile.camera),
+        _arg("detector", profile.visual_detector),
         _arg("model_path", model_path),
         _arg("engine_path", engine_path),
         "width:=640", "height:=480", "num_blocks:=4",
@@ -123,7 +127,7 @@ def yolo_docker_command(project_root: Path, profile: RunProfile,
         "--name", "isaac_yolo", *container_user_args(),
         "-e", "ROS_DOMAIN_ID=42", "-e", "FASTDDS_BUILTIN_TRANSPORTS=UDPv4",
         "-e", "CUDA_MODULE_LOADING=LAZY",
-        "-v", f"{Path.home() / 'workspaces/isaac_ros-dev'}:/workspaces/isaac_ros-dev",
+        "-v", f"{isaac_root()}:/workspaces/isaac_ros-dev",
         "--workdir", "/workspaces/isaac_ros-dev",
         resolve_yolo_image(profile.yolo_image), "/bin/bash", "-lc", inner,
     ]
